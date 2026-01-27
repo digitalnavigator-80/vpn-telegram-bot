@@ -590,6 +590,26 @@ async def status(cb: CallbackQuery):
     await cb.answer()
 
 
+@dp.message(F.text)
+async def fallback_text(message: Message):
+    uid = message.from_user.id
+    text = "Я понимаю только кнопки 👇\nВыбери действие из меню."
+    if is_allowed(uid):
+        await message.answer(text, reply_markup=kb_main())
+    else:
+        await message.answer(text, reply_markup=kb_guest())
+
+
+@dp.callback_query()
+async def fallback_callback(cb: CallbackQuery):
+    uid = cb.from_user.id
+    await cb.answer("Эта кнопка устарела. Открой меню 👇", show_alert=True)
+    if is_allowed(uid):
+        await cb.message.answer("Главное меню:", reply_markup=kb_main())
+    else:
+        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+
+
 async def main():
     logging.info("Bot started")
     await dp.start_polling(bot)
