@@ -1,0 +1,7 @@
+services:
+  vpn-bot:
+    build: .
+    container_name: vpn-telegram-bot
+    restart: always
+    env_file:
+      - .env
