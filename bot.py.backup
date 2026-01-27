@@ -1,0 +1,158 @@
+import os
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+
+import requests
+import urllib3
+from dotenv import load_dotenv
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message, CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+# ---------- basic setup ----------
+logging.basicConfig(level=logging.INFO)
+load_dotenv("/opt/marzban-tg-bot/.env")
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MARZBAN_BASE_URL = os.getenv("MARZBAN_BASE_URL", "https://127.0.0.1").rstrip("/")
+MARZBAN_TOKEN = os.getenv("MARZBAN_TOKEN")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+ADMIN_TG_ID = int(os.getenv("ADMIN_TG_ID", "0"))
+
+DATA_DIR = "/opt/marzban-tg-bot/data"
+ALLOWED = f"{DATA_DIR}/allowed.json"
+PENDING = f"{DATA_DIR}/pending.json"
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+session = requests.Session()
+session.headers.update({"Authorization": f"Bearer {MARZBAN_TOKEN}"})
+session.verify = False
+
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher()
+
+# ---------- utils ----------
+def load_list(path):
+    try:
+        return json.load(open(path))
+    except:
+        return []
+
+def save_list(path, data):
+    json.dump(data, open(path, "w"), indent=2)
+
+def is_admin(uid):
+    return uid == ADMIN_TG_ID
+
+def is_allowed(uid):
+    return is_admin(uid) or uid in load_list(ALLOWED)
+
+def username(uid):
+    return f"user{uid}"
+
+async def api_get(path):
+    r = session.get(MARZBAN_BASE_URL + path)
+    return r.status_code, r.text
+
+async def api_post(path, payload=None):
+    r = session.post(MARZBAN_BASE_URL + path, json=payload or {})
+    return r.status_code, r.text
+
+# ---------- keyboards ----------
+def kb_guest():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📝 Запросить доступ", callback_data="req")
+    return kb.as_markup()
+
+def kb_main():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📎 Моя подписка", callback_data="sub")
+    kb.button(text="🚀 Подключиться", callback_data="connect")
+    kb.button(text="📊 Статус", callback_data="status")
+    kb.adjust(1)
+    return kb.as_markup()
+
+# ---------- handlers ----------
+@dp.message(CommandStart())
+async def start(m: Message):
+    if is_allowed(m.from_user.id):
+        await m.answer("Добро пожаловать 👋", reply_markup=kb_main())
+    else:
+        await m.answer(
+            "Это тестовый VPN-сервис.\nНажмите кнопку ниже, чтобы запросить доступ.",
+            reply_markup=kb_guest()
+        )
+
+@dp.callback_query(F.data == "req")
+async def req(cb: CallbackQuery):
+    uid = cb.from_user.id
+    p = load_list(PENDING)
+    if uid not in p:
+        p.append(uid)
+        save_list(PENDING, p)
+
+        await bot.send_message(
+            ADMIN_TG_ID,
+            f"📝 Запрос доступа от @{cb.from_user.username} ({uid})",
+            reply_markup=InlineKeyboardBuilder()
+            .button(text="✅ Одобрить", callback_data=f"ok:{uid}")
+            .button(text="❌ Отклонить", callback_data=f"no:{uid}")
+            .as_markup()
+        )
+
+    await cb.message.answer("⏳ Заявка отправлена. Ожидай подтверждения.")
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("ok:"))
+async def ok(cb: CallbackQuery):
+    uid = int(cb.data.split(":")[1])
+    a = load_list(ALLOWED)
+    if uid not in a:
+        a.append(uid)
+        save_list(ALLOWED, a)
+
+    await api_post("/api/user", {
+        "username": username(uid),
+        "proxies": {"vless": {}}
+    })
+
+    code, text = await api_get(f"/api/user/{username(uid)}")
+    sub = json.loads(text)["subscription_url"]
+
+    await bot.send_message(
+        uid,
+        f"✅ Доступ одобрен!\n\n"
+        f"📎 Ссылка подписки:\n"
+        f"{PUBLIC_BASE_URL}{sub}",
+        reply_markup=kb_main()
+    )
+    await cb.answer("Готово")
+
+@dp.callback_query(F.data == "sub")
+async def sub(cb: CallbackQuery):
+    code, text = await api_get(f"/api/user/{username(cb.from_user.id)}")
+    sub = json.loads(text)["subscription_url"]
+    await cb.message.answer(f"📎 Твоя подписка:\n{PUBLIC_BASE_URL}{sub}")
+    await cb.answer()
+
+@dp.callback_query(F.data == "status")
+async def status(cb: CallbackQuery):
+    code, text = await api_get(f"/api/user/{username(cb.from_user.id)}")
+    d = json.loads(text)
+    await cb.message.answer(
+        f"📊 Статус\n\n"
+        f"🟢 Активен\n"
+        f"📶 Трафик: {d['used_traffic']} байт"
+    )
+    await cb.answer()
+
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
