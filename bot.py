@@ -19,12 +19,18 @@ logging.basicConfig(level=logging.INFO)
 load_dotenv("/opt/marzban-tg-bot/.env")
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
-MARZBAN_BASE_URL = (os.getenv("MARZBAN_BASE_URL") or "https://127.0.0.1").strip().rstrip("/")
+MARZBAN_BASE_URL = (
+    os.getenv("MARZBAN_BASE_URL")
+    or os.getenv("MARZBAN_URL")
+    or "https://127.0.0.1"
+).strip().rstrip("/")
 MARZBAN_TOKEN = (os.getenv("MARZBAN_TOKEN") or "").strip()
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
 
 ADMIN_TG_ID_RAW = (os.getenv("ADMIN_TG_ID") or "").strip()
 ADMIN_TG_ID = int(ADMIN_TG_ID_RAW) if ADMIN_TG_ID_RAW.isdigit() else None
+TEST_MODE_RAW = (os.getenv("TEST_MODE") or "1").strip()
+TEST_MODE_ENABLED = TEST_MODE_RAW != "0"
 
 DATA_DIR = "/opt/marzban-tg-bot/data"
 ALLOWED_PATH = f"{DATA_DIR}/allowed.json"
@@ -288,28 +294,46 @@ def kb_admin_request(user_id: int):
 
 
 # ----------------- business logic -----------------
-async def ensure_user_exists(tg_id: int) -> tuple[bool, str]:
-    user = canonical_username(tg_id)
-    code, _ = await api_get_user(user)
-    logging.info("ensure_user_exists: tg_id=%s username=%s code=%s", tg_id, user, code)
+async def ensure_user_exists(tg_id: int, tg_username: str | None) -> tuple[bool, str | None, str | None]:
+    username = canonical_username(tg_id)
+    code, _ = await api_get_user(username)
+    logging.info("ensure: check user=%s code=%s", username, code)
     if code == 200:
-        _save_user_mapping(tg_id, user)
-        return True, "уже существует"
+        _save_user_mapping(tg_id, username)
+        logging.info("ensure: exists user=%s", username)
+        return False, username, None
+    if code in (401, 403):
+        return False, None, "auth"
+    if code != 404:
+        return False, None, f"http_{code}"
+    if not TEST_MODE_ENABLED:
+        return False, None, "not_found"
+
+    note_parts = [f"tg_id={tg_id}"]
+    if tg_username:
+        note_parts.append(f"tg=@{tg_username}")
 
     payload = {
-        "username": user,
-        "proxies": {"vless": {}},
-        "inbounds": {},
+        "username": username,
         "expire": None,
         "data_limit": None,
         "data_limit_reset_strategy": "no_reset",
-        "note": f"tg:{tg_id}",
+        "note": " ".join(note_parts),
     }
     code, text = await api_post("/api/user", payload)
-    if code in (200, 201, 409):
-        _save_user_mapping(tg_id, user)
-        return True, "создан"
-    return False, f"ошибка создания (HTTP {code}): {text[:200]}"
+    logging.info("ensure: create user=%s code=%s", username, code)
+    if code in (200, 201):
+        _save_user_mapping(tg_id, username)
+        logging.info("ensure: created user=%s", username)
+        return True, username, None
+    if code == 409:
+        _save_user_mapping(tg_id, username)
+        logging.info("ensure: exists user=%s", username)
+        return False, username, None
+    if code == 422:
+        logging.warning("ensure: validation error user=%s text=%s", username, text[:200])
+        return False, None, "validation"
+    return False, None, f"http_{code}"
 
 
 async def get_user_data(username: str) -> dict | None:
@@ -459,6 +483,44 @@ async def help_cb(cb: CallbackQuery):
 async def req_access(cb: CallbackQuery):
     uid = cb.from_user.id
 
+    if TEST_MODE_ENABLED:
+        add_allowed(uid)
+        created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
+        if err == "auth":
+            await cb.message.answer("⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.")
+            return await cb.answer()
+        if err == "validation":
+            await cb.message.answer("⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.")
+            return await cb.answer()
+        if err and err.startswith("http_"):
+            await cb.message.answer("⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.")
+            return await cb.answer()
+        if not resolved:
+            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            return await cb.answer()
+
+        await cb.message.answer(
+            f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}"
+        )
+
+        link = await get_subscription_link(resolved)
+        if link:
+            await cb.message.answer(
+                "✅ Доступ одобрен!\n\n"
+                "📎 Твоя ссылка подписки (вставь в Hiddify как Subscription URL):\n"
+                f"{link}\n\n"
+                "Дальше открой «🚀 Как подключиться» и выбери своё устройство.",
+                reply_markup=kb_main(),
+            )
+        else:
+            await cb.message.answer(
+                "✅ Доступ одобрен!\n\n"
+                "⚠️ Не смог сформировать ссылку подписки.\n"
+                "Попроси администратора проверить настройки.",
+                reply_markup=kb_main(),
+            )
+        return await cb.answer()
+
     if is_allowed(uid):
         await cb.message.answer("✅ У тебя уже есть доступ.", reply_markup=kb_main())
         return await cb.answer()
@@ -497,18 +559,24 @@ async def adm_ok(cb: CallbackQuery):
     add_allowed(target_id)
 
     resolved = await resolve_marzban_username(target_id, None)
-    if resolved:
-        msg = "найден"
-        ok = True
-    else:
-        ok, msg = await ensure_user_exists(target_id)
-        if not ok:
-            await cb.message.answer(f"❌ Не смог создать пользователя в Marzban: {msg}")
+    created = False
+    if not resolved:
+        created, resolved, err = await ensure_user_exists(target_id, None)
+        if err == "auth":
+            await cb.message.answer("⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.")
             return await cb.answer()
-        resolved = canonical_username(target_id)
+        if err == "validation":
+            await cb.message.answer("⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.")
+            return await cb.answer()
+        if err and err.startswith("http_"):
+            await cb.message.answer("⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.")
+            return await cb.answer()
+        if not resolved:
+            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            return await cb.answer()
 
     link = await get_subscription_link(resolved)
-    await cb.message.answer(f"✅ Доступ выдан пользователю id={target_id} ({msg}).")
+    await cb.message.answer(f"✅ Доступ выдан пользователю id={target_id}.")
 
     if link:
         await bot.send_message(
@@ -593,10 +661,25 @@ async def sub_show(cb: CallbackQuery):
 
     resolved = await resolve_marzban_username(uid, cb.from_user.username)
     if not resolved:
+        created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
+        if err == "auth":
+            await cb.message.answer("⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.")
+            return await cb.answer()
+        if err == "not_found":
+            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            return await cb.answer()
+        if err == "validation":
+            await cb.message.answer("⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.")
+            return await cb.answer()
+        if err and err.startswith("http_"):
+            await cb.message.answer("⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.")
+            return await cb.answer()
+        if not resolved:
+            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            return await cb.answer()
         await cb.message.answer(
-            "Пользователь не найден в панели. Нажмите «Получить VPN» (создадим аккаунт)."
+            f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}"
         )
-        return await cb.answer()
 
     link = await get_subscription_link(resolved)
     if not link:
