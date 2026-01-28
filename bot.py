@@ -31,6 +31,7 @@ ADMIN_TG_ID_RAW = (os.getenv("ADMIN_TG_ID") or "").strip()
 ADMIN_TG_ID = int(ADMIN_TG_ID_RAW) if ADMIN_TG_ID_RAW.isdigit() else None
 TEST_MODE_RAW = (os.getenv("TEST_MODE") or "1").strip()
 TEST_MODE_ENABLED = TEST_MODE_RAW != "0"
+DEFAULT_INBOUND_TAG = (os.getenv("DEFAULT_INBOUND_TAG") or "VLESS TCP REALITY").strip()
 
 DATA_DIR = "/opt/marzban-tg-bot/data"
 ALLOWED_PATH = f"{DATA_DIR}/allowed.json"
@@ -315,13 +316,14 @@ async def ensure_user_exists(tg_id: int, tg_username: str | None) -> tuple[bool,
 
     payload = {
         "username": username,
+        "inbounds": {"vless": [DEFAULT_INBOUND_TAG]},
         "expire": None,
         "data_limit": None,
         "data_limit_reset_strategy": "no_reset",
         "note": " ".join(note_parts),
     }
     code, text = await api_post("/api/user", payload)
-    logging.info("ensure: create user=%s code=%s", username, code)
+    logging.info("ensure: create user=%s inbound_tag=%s code=%s", username, DEFAULT_INBOUND_TAG, code)
     if code in (200, 201):
         _save_user_mapping(tg_id, username)
         logging.info("ensure: created user=%s", username)
