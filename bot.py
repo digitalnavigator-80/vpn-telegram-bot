@@ -283,9 +283,15 @@ async def start(message: Message):
 async def back_main(cb: CallbackQuery):
     uid = cb.from_user.id
     if not is_allowed(uid):
-        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        try:
+            await cb.message.edit_text("Сначала получи доступ 👇", reply_markup=kb_guest())
+        except Exception:
+            await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
         return await cb.answer()
-    await cb.message.answer("Главное меню:", reply_markup=kb_main())
+    try:
+        await cb.message.edit_text("Главное меню:", reply_markup=kb_main())
+    except Exception:
+        await cb.message.answer("Главное меню:", reply_markup=kb_main())
     await cb.answer()
 
 
@@ -399,18 +405,30 @@ async def adm_no(cb: CallbackQuery):
 @dp.callback_query(F.data == "menu_sub")
 async def menu_sub(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
-        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        try:
+            await cb.message.edit_text("Сначала получи доступ 👇", reply_markup=kb_guest())
+        except Exception:
+            await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
         return await cb.answer()
-    await cb.message.answer("📎 Моя подписка:", reply_markup=kb_submenu())
+    try:
+        await cb.message.edit_text("📎 Моя подписка:", reply_markup=kb_submenu())
+    except Exception:
+        await cb.message.answer("📎 Моя подписка:", reply_markup=kb_submenu())
     await cb.answer()
 
 
 @dp.callback_query(F.data == "menu_connect")
 async def menu_connect(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
-        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        try:
+            await cb.message.edit_text("Сначала получи доступ 👇", reply_markup=kb_guest())
+        except Exception:
+            await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
         return await cb.answer()
-    await cb.message.answer("🚀 Выбери устройство:", reply_markup=kb_connect())
+    try:
+        await cb.message.edit_text("🚀 Выбери устройство:", reply_markup=kb_connect())
+    except Exception:
+        await cb.message.answer("🚀 Выбери устройство:", reply_markup=kb_connect())
     await cb.answer()
 
 
