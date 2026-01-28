@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import datetime, timezone
 import urllib.parse
+import uuid
 
 import requests
 import urllib3
@@ -316,6 +317,7 @@ async def ensure_user_exists(tg_id: int, tg_username: str | None) -> tuple[bool,
 
     payload = {
         "username": username,
+        "proxies": {"vless": {"id": str(uuid.uuid4()), "flow": ""}},
         "inbounds": {"vless": [DEFAULT_INBOUND_TAG]},
         "expire": None,
         "data_limit": None,
@@ -323,7 +325,15 @@ async def ensure_user_exists(tg_id: int, tg_username: str | None) -> tuple[bool,
         "note": " ".join(note_parts),
     }
     code, text = await api_post("/api/user", payload)
-    logging.info("ensure: create user=%s inbound_tag=%s code=%s", username, DEFAULT_INBOUND_TAG, code)
+    logging.info(
+        "ensure: create user=%s proxy_id=%s inbound_tag=%s code=%s",
+        username,
+        payload["proxies"]["vless"]["id"],
+        DEFAULT_INBOUND_TAG,
+        code,
+    )
+    if code == 500:
+        logging.warning("ensure: create user=%s code=500 text=%s", username, text[:200])
     if code in (200, 201):
         _save_user_mapping(tg_id, username)
         logging.info("ensure: created user=%s", username)
