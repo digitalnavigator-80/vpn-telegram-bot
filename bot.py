@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ----------------- settings -----------------
@@ -69,6 +69,7 @@ SESSION.timeout = 15
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+LAST_SCREEN_MESSAGE_ID: dict[int, int] = {}
 
 # ----------------- helpers: storage -----------------
 def _ensure_data_dir() -> None:
@@ -220,6 +221,43 @@ def _mark_trial_used(tg_id: int) -> None:
     data = _read_json_map(TRIAL_USED_PATH)
     data[str(tg_id)] = True
     _write_json_map(TRIAL_USED_PATH, data)
+
+
+def reply_menu_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🏠 Меню")]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        input_field_placeholder="Выберите действие…",
+    )
+
+
+async def show_screen(chat_id: int, tg_id: int, text: str, keyboard):
+    msg_id = LAST_SCREEN_MESSAGE_ID.get(tg_id)
+    if msg_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+            return
+        except Exception as exc:
+            logging.info("show_screen edit failed: tg_id=%s error=%s", tg_id, exc)
+    msg = await bot.send_message(chat_id, text, reply_markup=keyboard)
+    LAST_SCREEN_MESSAGE_ID[tg_id] = msg.message_id
+
+
+async def ensure_reply_keyboard(chat_id: int):
+    try:
+        msg = await bot.send_message(chat_id, " ", reply_markup=reply_menu_kb())
+        try:
+            await bot.delete_message(chat_id, msg.message_id)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 async def api_get_user(username: str):
@@ -607,14 +645,21 @@ def short_name(u) -> str:
 @dp.message(CommandStart())
 async def start(message: Message):
     uid = message.from_user.id
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    await ensure_reply_keyboard(message.chat.id)
     if is_allowed(uid):
-        await message.answer("Добро пожаловать 👋\nВыбирай действие:", reply_markup=kb_main())
+        await show_screen(message.chat.id, uid, "Добро пожаловать 👋\nВыбирай действие:", kb_main())
     else:
-        await message.answer(
+        await show_screen(
+            message.chat.id,
+            uid,
             "Привет! Это тестовый VPN-сервис.\n\n"
             "Чтобы получить доступ — нажми «Запросить доступ».\n"
             "После одобрения я пришлю ссылку подписки и инструкцию подключения.",
-            reply_markup=kb_guest(),
+            kb_guest(),
         )
 
 
@@ -622,15 +667,9 @@ async def start(message: Message):
 async def back_main(cb: CallbackQuery):
     uid = cb.from_user.id
     if not is_allowed(uid):
-        try:
-            await cb.message.edit_text("Сначала получи доступ 👇", reply_markup=kb_guest())
-        except Exception:
-            await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    try:
-        await cb.message.edit_text("Главное меню:", reply_markup=kb_main())
-    except Exception:
-        await cb.message.answer("Главное меню:", reply_markup=kb_main())
+    await show_screen(cb.message.chat.id, uid, "Главное меню:", kb_main())
     await cb.answer()
 
 
@@ -657,38 +696,35 @@ async def req_access(cb: CallbackQuery):
         add_allowed(uid)
         created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
         if err == "auth":
-            await cb.message.answer("⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.")
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_guest())
             return await cb.answer()
         if err == "validation":
-            await cb.message.answer("⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.")
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_guest())
             return await cb.answer()
         if err and err.startswith("http_"):
-            await cb.message.answer("⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.")
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_guest())
             return await cb.answer()
         if not resolved:
-            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_guest())
             return await cb.answer()
-
-        await cb.message.answer(
-            f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}"
-        )
 
         link = await get_subscription_link(resolved)
         if link:
-            await cb.message.answer(
+            text = (
+                f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}\n\n"
                 "✅ Доступ одобрен!\n\n"
                 "📎 Твоя ссылка подписки (вставь в Hiddify как Subscription URL):\n"
                 f"{link}\n\n"
-                "Дальше открой «🚀 Как подключиться» и выбери своё устройство.",
-                reply_markup=kb_main(),
+                "Дальше открой «🚀 Как подключиться» и выбери своё устройство."
             )
         else:
-            await cb.message.answer(
+            text = (
+                f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}\n\n"
                 "✅ Доступ одобрен!\n\n"
                 "⚠️ Не смог сформировать ссылку подписки.\n"
-                "Попроси администратора проверить настройки.",
-                reply_markup=kb_main(),
+                "Попроси администратора проверить настройки."
             )
+        await show_screen(cb.message.chat.id, uid, text, kb_main())
         return await cb.answer()
 
     if is_allowed(uid):
@@ -794,45 +830,27 @@ async def adm_no(cb: CallbackQuery):
 @dp.callback_query(F.data == "menu_sub")
 async def menu_sub(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
-        try:
-            await cb.message.edit_text("Сначала получи доступ 👇", reply_markup=kb_guest())
-        except Exception:
-            await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    try:
-        await cb.message.edit_text("📎 Моя подписка:", reply_markup=kb_submenu())
-    except Exception:
-        await cb.message.answer("📎 Моя подписка:", reply_markup=kb_submenu())
+    await show_screen(cb.message.chat.id, cb.from_user.id, "📎 Моя подписка:", kb_submenu())
     await cb.answer()
 
 
 @dp.callback_query(F.data == "menu_connect")
 async def menu_connect(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
-        try:
-            await cb.message.edit_text("Сначала получи доступ 👇", reply_markup=kb_guest())
-        except Exception:
-            await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    try:
-        await cb.message.edit_text("🚀 Выбери устройство:", reply_markup=kb_connect())
-    except Exception:
-        await cb.message.answer("🚀 Выбери устройство:", reply_markup=kb_connect())
+    await show_screen(cb.message.chat.id, cb.from_user.id, "🚀 Выбери устройство:", kb_connect())
     await cb.answer()
 
 
 @dp.callback_query(F.data == "menu_tariffs")
 async def menu_tariffs(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
-        try:
-            await cb.message.edit_text("Сначала получи доступ 👇", reply_markup=kb_guest())
-        except Exception:
-            await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    try:
-        await cb.message.edit_text("💳 Тарифы:", reply_markup=kb_tariffs())
-    except Exception:
-        await cb.message.answer("💳 Тарифы:", reply_markup=kb_tariffs())
+    await show_screen(cb.message.chat.id, cb.from_user.id, "💳 Тарифы:", kb_tariffs())
     await cb.answer()
 
 
@@ -840,43 +858,45 @@ async def menu_tariffs(cb: CallbackQuery):
 async def plan_apply(cb: CallbackQuery):
     uid = cb.from_user.id
     if not is_allowed(uid):
-        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
 
     plan_id = cb.data.split(":", 1)[1]
     plan = PLANS.get(plan_id)
     if not plan:
-        await cb.message.answer("⚠️ Неизвестный тариф.")
+        await show_screen(cb.message.chat.id, uid, "⚠️ Неизвестный тариф.", kb_tariffs())
         return await cb.answer()
 
     if plan_id == "trial_7d" and _trial_used(uid):
-        await cb.message.answer(
+        await show_screen(
+            cb.message.chat.id,
+            uid,
             "⛔ Trial уже использован. Выберите месяц или год.",
-            reply_markup=kb_tariffs(),
+            kb_tariffs(),
         )
         return await cb.answer()
 
     if plan_id != "trial_7d" and not TEST_MODE_ENABLED:
-        await cb.message.answer("Для активации выберите оплату (скоро).", reply_markup=kb_tariffs())
+        await show_screen(cb.message.chat.id, uid, "Для активации выберите оплату (скоро).", kb_tariffs())
         return await cb.answer()
 
     resolved = await resolve_marzban_username(uid, cb.from_user.username)
     if not resolved:
         created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
         if err == "auth":
-            await cb.message.answer("⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.")
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_tariffs())
             return await cb.answer()
         if err == "not_found":
-            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_tariffs())
             return await cb.answer()
         if err == "validation":
-            await cb.message.answer("⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.")
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_tariffs())
             return await cb.answer()
         if err and err.startswith("http_"):
-            await cb.message.answer("⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.")
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_tariffs())
             return await cb.answer()
         if not resolved:
-            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_tariffs())
             return await cb.answer()
 
     now = datetime.now(timezone.utc)
@@ -899,7 +919,7 @@ async def plan_apply(cb: CallbackQuery):
     code, text = await api_put_user(resolved, {"expire": expire_api, "note": note})
     if code not in (200, 204):
         logging.warning("plan: tg_id=%s username=%s code=%s text=%s", uid, resolved, code, text[:200])
-        await cb.message.answer("⚠️ Не удалось применить тариф. Попробуйте позже.")
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось применить тариф. Попробуйте позже.", kb_tariffs())
         return await cb.answer()
 
     if plan_id == "trial_7d":
@@ -907,10 +927,11 @@ async def plan_apply(cb: CallbackQuery):
 
     human_title = plan["title"]
     until_txt = expire_dt.strftime("%d.%m.%Y")
-    await cb.message.answer(
-        f"✅ План активирован: {human_title}\n"
-        f"⏳ Действует до: {until_txt}",
-        reply_markup=kb_submenu(),
+    await show_screen(
+        cb.message.chat.id,
+        uid,
+        f"✅ План активирован: {human_title}\n⏳ Действует до: {until_txt}",
+        kb_submenu(),
     )
     await cb.answer()
 
@@ -920,39 +941,42 @@ async def plan_apply(cb: CallbackQuery):
 async def sub_show(cb: CallbackQuery):
     uid = cb.from_user.id
     if not is_allowed(uid):
-        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
 
     resolved = await resolve_marzban_username(uid, cb.from_user.username)
     if not resolved:
         created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
         if err == "auth":
-            await cb.message.answer("⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.")
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_submenu())
             return await cb.answer()
         if err == "not_found":
-            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_submenu())
             return await cb.answer()
         if err == "validation":
-            await cb.message.answer("⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.")
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_submenu())
             return await cb.answer()
         if err and err.startswith("http_"):
-            await cb.message.answer("⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.")
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_submenu())
             return await cb.answer()
         if not resolved:
-            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_submenu())
             return await cb.answer()
-        await cb.message.answer(
-            f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}"
+        await show_screen(
+            cb.message.chat.id,
+            uid,
+            f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}",
+            kb_submenu(),
         )
 
     code, text = await api_get_user(resolved)
     if code != 200:
         logging.warning("subscription: tg_id=%s username=%s code=%s", uid, resolved, code)
-        await cb.message.answer("⚠️ Не удалось получить данные подписки. Попробуйте позже.")
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные подписки. Попробуйте позже.", kb_submenu())
         return await cb.answer()
     user_data = _parse_json(text)
     if not isinstance(user_data, dict):
-        await cb.message.answer("⚠️ Не удалось получить данные подписки. Попробуйте позже.")
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные подписки. Попробуйте позже.", kb_submenu())
         return await cb.answer()
 
     usage_data = None
@@ -965,7 +989,7 @@ async def sub_show(cb: CallbackQuery):
         logging.warning("subscription: tg_id=%s username=%s usage_code=%s", uid, resolved, u_code)
 
     logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
-    await cb.message.answer(format_subscription(user_data, usage_data), reply_markup=kb_subscription_actions())
+    await show_screen(cb.message.chat.id, uid, format_subscription(user_data, usage_data), kb_subscription_actions())
     return await cb.answer()
 
 
@@ -1145,11 +1169,22 @@ async def status(cb: CallbackQuery):
 @dp.message(F.text)
 async def fallback_text(message: Message):
     uid = message.from_user.id
+    if (message.text or "").strip() == "🏠 Меню":
+        try:
+            await bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
+        await ensure_reply_keyboard(message.chat.id)
+        if is_allowed(uid):
+            await show_screen(message.chat.id, uid, "Главное меню:", kb_main())
+        else:
+            await show_screen(message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
+        return
     text = "Я понимаю только кнопки 👇\nВыбери действие из меню."
     if is_allowed(uid):
-        await message.answer(text, reply_markup=kb_main())
+        await show_screen(message.chat.id, uid, text, kb_main())
     else:
-        await message.answer(text, reply_markup=kb_guest())
+        await show_screen(message.chat.id, uid, text, kb_guest())
 
 
 @dp.callback_query()
