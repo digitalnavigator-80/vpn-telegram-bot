@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+import urllib.parse
 
 import requests
 import urllib3
@@ -28,6 +29,7 @@ ADMIN_TG_ID = int(ADMIN_TG_ID_RAW) if ADMIN_TG_ID_RAW.isdigit() else None
 DATA_DIR = "/opt/marzban-tg-bot/data"
 ALLOWED_PATH = f"{DATA_DIR}/allowed.json"
 PENDING_PATH = f"{DATA_DIR}/pending.json"
+USER_MAP_PATH = f"{DATA_DIR}/user_map.json"
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN is empty in .env")
@@ -51,6 +53,10 @@ dp = Dispatcher()
 
 
 # ----------------- helpers: storage -----------------
+def _ensure_data_dir() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
 def _read_json_list(path: str) -> list:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -61,6 +67,24 @@ def _read_json_list(path: str) -> list:
 
 
 def _write_json_list(path: str, data: list) -> None:
+    _ensure_data_dir()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _read_json_map(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_json_map(path: str, data: dict) -> None:
+    _ensure_data_dir()
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -107,8 +131,12 @@ async def api_get(path: str):
     url = f"{MARZBAN_BASE_URL}{path}"
 
     def _do():
-        r = SESSION.get(url)
-        return r.status_code, r.text
+        try:
+            r = SESSION.get(url)
+            return r.status_code, r.text
+        except Exception as exc:
+            logging.warning("api_get failed: url=%s error=%s", url, exc)
+            return 0, str(exc)
 
     return await asyncio.to_thread(_do)
 
@@ -117,14 +145,68 @@ async def api_post(path: str, payload: dict):
     url = f"{MARZBAN_BASE_URL}{path}"
 
     def _do():
-        r = SESSION.post(url, json=payload)
-        return r.status_code, r.text
+        try:
+            r = SESSION.post(url, json=payload)
+            return r.status_code, r.text
+        except Exception as exc:
+            logging.warning("api_post failed: url=%s error=%s", url, exc)
+            return 0, str(exc)
 
     return await asyncio.to_thread(_do)
 
 
-def username_for(user_id: int) -> str:
-    return f"user{user_id}"
+def canonical_username(tg_id: int) -> str:
+    return f"tg_{tg_id}"
+
+
+def legacy_username(tg_id: int) -> str:
+    return f"user{tg_id}"
+
+
+def _quote_username(username: str) -> str:
+    return urllib.parse.quote(username, safe="")
+
+
+def _save_user_mapping(tg_id: int, username: str) -> None:
+    data = _read_json_map(USER_MAP_PATH)
+    data[str(tg_id)] = username
+    _write_json_map(USER_MAP_PATH, data)
+    logging.info("user_map saved: tg_id=%s username=%s", tg_id, username)
+
+
+def _get_user_mapping(tg_id: int) -> str | None:
+    data = _read_json_map(USER_MAP_PATH)
+    return data.get(str(tg_id))
+
+
+async def api_get_user(username: str):
+    encoded = _quote_username(username)
+    return await api_get(f"/api/user/{encoded}")
+
+
+async def api_get_user_usage(username: str):
+    encoded = _quote_username(username)
+    return await api_get(f"/api/user/{encoded}/usage")
+
+
+async def api_revoke_sub(username: str):
+    encoded = _quote_username(username)
+    return await api_post(f"/api/user/{encoded}/revoke_sub", {})
+
+
+async def api_find_user_by_username(username: str):
+    query = urllib.parse.urlencode(
+        {"username": username, "limit": 1, "offset": 0},
+        doseq=True,
+    )
+    return await api_get(f"/api/users?{query}")
+
+
+def _parse_json(text: str) -> dict | list | None:
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
 
 
 def fmt_dt(v: str | None) -> str:
@@ -207,9 +289,11 @@ def kb_admin_request(user_id: int):
 
 # ----------------- business logic -----------------
 async def ensure_user_exists(tg_id: int) -> tuple[bool, str]:
-    user = username_for(tg_id)
-    code, _ = await api_get(f"/api/user/{user}")
+    user = canonical_username(tg_id)
+    code, _ = await api_get_user(user)
+    logging.info("ensure_user_exists: tg_id=%s username=%s code=%s", tg_id, user, code)
     if code == 200:
+        _save_user_mapping(tg_id, user)
         return True, "уже существует"
 
     payload = {
@@ -223,25 +307,25 @@ async def ensure_user_exists(tg_id: int) -> tuple[bool, str]:
     }
     code, text = await api_post("/api/user", payload)
     if code in (200, 201, 409):
+        _save_user_mapping(tg_id, user)
         return True, "создан"
     return False, f"ошибка создания (HTTP {code}): {text[:200]}"
 
 
-async def get_user_data(tg_id: int) -> dict | None:
-    user = username_for(tg_id)
-    code, text = await api_get(f"/api/user/{user}")
+async def get_user_data(username: str) -> dict | None:
+    code, text = await api_get_user(username)
     if code != 200:
+        if code in (401, 403, 404):
+            logging.warning("get_user_data: username=%s code=%s", username, code)
         return None
-    try:
-        return json.loads(text)
-    except Exception:
-        return None
+    data = _parse_json(text)
+    return data if isinstance(data, dict) else None
 
 
-async def get_subscription_link(tg_id: int) -> str | None:
+async def get_subscription_link(username: str) -> str | None:
     if not PUBLIC_BASE_URL:
         return None
-    data = await get_user_data(tg_id)
+    data = await get_user_data(username)
     if not data:
         return None
     sub_path = data.get("subscription_url")
@@ -252,10 +336,71 @@ async def get_subscription_link(tg_id: int) -> str | None:
     return f"{PUBLIC_BASE_URL}{sub_path}"
 
 
-async def revoke_subscription(tg_id: int) -> bool:
-    user = username_for(tg_id)
-    code, _ = await api_post(f"/api/user/{user}/revoke_sub", {})
+async def revoke_subscription(username: str) -> bool:
+    code, _ = await api_revoke_sub(username)
+    if code not in (200, 204):
+        if code in (401, 403, 404):
+            logging.warning("revoke_subscription: username=%s code=%s", username, code)
     return code in (200, 204)
+
+
+async def resolve_marzban_username(tg_id: int, tg_username: str | None) -> str | None:
+    tg_username = (tg_username or "").strip()
+
+    mapped = _get_user_mapping(tg_id)
+    if mapped:
+        logging.info("resolve: tg_id=%s mapped=%s", tg_id, mapped)
+        code, _ = await api_get_user(mapped)
+        logging.info("resolve: check mapped=%s code=%s", mapped, code)
+        if code == 200:
+            return mapped
+
+    canonical = canonical_username(tg_id)
+    code, _ = await api_get_user(canonical)
+    logging.info("resolve: check canonical=%s code=%s", canonical, code)
+    if code == 200:
+        _save_user_mapping(tg_id, canonical)
+        return canonical
+
+    if tg_username:
+        code, _ = await api_get_user(tg_username)
+        logging.info("resolve: check username=%s code=%s", tg_username, code)
+        if code == 200:
+            _save_user_mapping(tg_id, tg_username)
+            return tg_username
+
+    legacy = legacy_username(tg_id)
+    code, _ = await api_get_user(legacy)
+    logging.info("resolve: check legacy=%s code=%s", legacy, code)
+    if code == 200:
+        _save_user_mapping(tg_id, legacy)
+        return legacy
+
+    for candidate in (canonical, legacy, tg_username):
+        if not candidate:
+            continue
+        code, text = await api_find_user_by_username(candidate)
+        logging.info("resolve: list username=%s code=%s", candidate, code)
+        if code != 200:
+            if code in (401, 403, 404):
+                logging.warning("resolve: list username=%s code=%s", candidate, code)
+            continue
+        data = _parse_json(text)
+        if isinstance(data, dict):
+            users = data.get("users") or data.get("data") or data.get("results") or []
+        elif isinstance(data, list):
+            users = data
+        else:
+            users = []
+        if users:
+            found = users[0].get("username") if isinstance(users[0], dict) else None
+            if found:
+                logging.info("resolve: found via list tg_id=%s username=%s", tg_id, found)
+                _save_user_mapping(tg_id, found)
+                return found
+
+    logging.warning("resolve: not found tg_id=%s", tg_id)
+    return None
 
 
 def short_name(u) -> str:
@@ -351,12 +496,18 @@ async def adm_ok(cb: CallbackQuery):
     remove_pending(target_id)
     add_allowed(target_id)
 
-    ok, msg = await ensure_user_exists(target_id)
-    if not ok:
-        await cb.message.answer(f"❌ Не смог создать пользователя в Marzban: {msg}")
-        return await cb.answer()
+    resolved = await resolve_marzban_username(target_id, None)
+    if resolved:
+        msg = "найден"
+        ok = True
+    else:
+        ok, msg = await ensure_user_exists(target_id)
+        if not ok:
+            await cb.message.answer(f"❌ Не смог создать пользователя в Marzban: {msg}")
+            return await cb.answer()
+        resolved = canonical_username(target_id)
 
-    link = await get_subscription_link(target_id)
+    link = await get_subscription_link(resolved)
     await cb.message.answer(f"✅ Доступ выдан пользователю id={target_id} ({msg}).")
 
     if link:
@@ -440,19 +591,14 @@ async def sub_show(cb: CallbackQuery):
         await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
         return await cb.answer()
 
-    ok, _ = await ensure_user_exists(uid)
-    if not ok:
+    resolved = await resolve_marzban_username(uid, cb.from_user.username)
+    if not resolved:
         await cb.message.answer(
-            "⚠️ Не удалось получить данные подписки.\n\n"
-            "Возможные причины:\n"
-            "• доступ ещё не выдан\n"
-            "• подписка не активна\n"
-            "• временные проблемы сервиса\n\n"
-            "Если считаешь это ошибкой — нажми «❓ Помощь»."
+            "Пользователь не найден в панели. Нажмите «Получить VPN» (создадим аккаунт)."
         )
         return await cb.answer()
 
-    link = await get_subscription_link(uid)
+    link = await get_subscription_link(resolved)
     if not link:
         await cb.message.answer("⚠️ Не могу сформировать ссылку. Проверь PUBLIC_BASE_URL у администратора.")
         return await cb.answer()
@@ -480,19 +626,14 @@ async def sub_revoke(cb: CallbackQuery):
         await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
         return await cb.answer()
 
-    ok, _ = await ensure_user_exists(uid)
-    if not ok:
+    resolved = await resolve_marzban_username(uid, cb.from_user.username)
+    if not resolved:
         await cb.message.answer(
-            "⚠️ Не удалось получить данные подписки.\n\n"
-            "Возможные причины:\n"
-            "• доступ ещё не выдан\n"
-            "• подписка не активна\n"
-            "• временные проблемы сервиса\n\n"
-            "Если считаешь это ошибкой — нажми «❓ Помощь»."
+            "Пользователь не найден в панели. Нажмите «Получить VPN» (создадим аккаунт)."
         )
         return await cb.answer()
 
-    ok2 = await revoke_subscription(uid)
+    ok2 = await revoke_subscription(resolved)
     if not ok2:
         await cb.message.answer(
             "⚠️ Не удалось получить данные подписки.\n\n"
@@ -504,7 +645,7 @@ async def sub_revoke(cb: CallbackQuery):
         )
         return await cb.answer()
 
-    link = await get_subscription_link(uid)
+    link = await get_subscription_link(resolved)
     if not link:
         await cb.message.answer("⚠️ Перевыпустил, но не могу сформировать ссылку (PUBLIC_BASE_URL).")
         return await cb.answer()
@@ -601,7 +742,14 @@ async def status(cb: CallbackQuery):
         await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
         return await cb.answer()
 
-    data = await get_user_data(uid)
+    resolved = await resolve_marzban_username(uid, cb.from_user.username)
+    if not resolved:
+        await cb.message.answer(
+            "Пользователь не найден в панели. Нажмите «Получить VPN» (создадим аккаунт)."
+        )
+        return await cb.answer()
+
+    data = await get_user_data(resolved)
     if not data:
         await cb.message.answer(
             "⚠️ Не удалось получить данные подписки.\n\n"
@@ -631,7 +779,7 @@ async def status(cb: CallbackQuery):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     msg = (
         f"📊 Статус на {now}\n\n"
-        f"👤 Пользователь: `{username_for(uid)}`\n"
+        f"👤 Пользователь: `{resolved}`\n"
         f"{status_emoji} Статус: *{status_val}*\n"
         f"⏳ Срок: *{fmt_expire(data.get('expire'))}*\n"
         f"📶 Трафик: *{traffic_txt}*\n"
