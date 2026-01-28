@@ -241,11 +241,106 @@ def fmt_bytes(n) -> str:
     return f"{f:.2f} {units[i]}"
 
 
+def fmt_bytes_1(n) -> str:
+    if n is None:
+        return "—"
+    try:
+        n = float(n)
+    except Exception:
+        return str(n)
+    units = ["B", "KB", "MB", "GB", "TB"]
+    f = float(n)
+    i = 0
+    while f >= 1024 and i < len(units) - 1:
+        f /= 1024
+        i += 1
+    if i == 0:
+        return f"{int(f)} {units[i]}"
+    return f"{f:.1f} {units[i]}"
+
+
 def fmt_expire(expire) -> str:
     # Marzban может отдавать null/None или timestamp/строку — оставим безопасно
     if expire in (None, "null"):
         return "бессрочно"
     return str(expire)
+
+
+def _format_date(dt_raw) -> str:
+    if not dt_raw or dt_raw in (None, "null"):
+        return "—"
+    if isinstance(dt_raw, str):
+        return dt_raw.replace("T", " ").split(".")[0].replace("Z", "")
+    return str(dt_raw)
+
+
+def format_subscription(user_json: dict, usage_json: dict | None) -> str:
+    username = user_json.get("username") or "—"
+
+    status_val = (user_json.get("status") or "").lower()
+    status_map = {
+        "active": "Активна",
+        "expired": "Истекла",
+        "disabled": "Отключена",
+    }
+    status_txt = status_map.get(status_val, "—")
+    status_emoji = {
+        "active": "✅",
+        "expired": "⏳",
+        "disabled": "⛔",
+    }.get(status_val, "ℹ️")
+
+    expire_raw = user_json.get("expire")
+    expire_txt = "без срока" if expire_raw in (None, "null") else _format_date(expire_raw)
+
+    limit = user_json.get("data_limit")
+    if limit in (None, "null"):
+        limit_txt = "∞"
+    else:
+        limit_txt = fmt_bytes_1(limit)
+
+    used = None
+    if isinstance(usage_json, dict):
+        for key in ("used_traffic", "used", "traffic", "total_traffic"):
+            if key in usage_json:
+                used = usage_json.get(key)
+                break
+    if used is None and "used_traffic" in user_json:
+        used = user_json.get("used_traffic")
+
+    if used is None:
+        traffic_txt = "неизвестно"
+    else:
+        traffic_txt = f"{fmt_bytes_1(used)} / {limit_txt}"
+
+    inb = user_json.get("inbounds") or {}
+    inb_txt = []
+    for proto, arr in inb.items():
+        if isinstance(arr, list) and arr:
+            inb_txt.append(", ".join(arr))
+    inbound_line = "—" if not inb_txt else " ; ".join(inb_txt)
+
+    sub_url = None
+    if PUBLIC_BASE_URL:
+        sub_path = user_json.get("subscription_url")
+        if sub_path:
+            if not sub_path.endswith("/"):
+                sub_path += "/"
+            sub_url = f"{PUBLIC_BASE_URL}{sub_path}"
+
+    updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    lines = [
+        f"👤 Пользователь: {username}",
+        f"📡 Inbound: {inbound_line}",
+        f"{status_emoji} Статус: {status_txt}",
+        f"⏳ До: {expire_txt}",
+        f"📊 Трафик: {traffic_txt}",
+        f"🔄 Обновлено: {updated}",
+    ]
+    if sub_url:
+        lines.append(f"🔗 Подписка: {sub_url}")
+    return "\n".join(lines)
 
 
 # ----------------- keyboards -----------------
@@ -693,24 +788,27 @@ async def sub_show(cb: CallbackQuery):
             f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}"
         )
 
-    link = await get_subscription_link(resolved)
-    if not link:
-        await cb.message.answer("⚠️ Не могу сформировать ссылку. Проверь PUBLIC_BASE_URL у администратора.")
+    code, text = await api_get_user(resolved)
+    if code != 200:
+        logging.warning("subscription: tg_id=%s username=%s code=%s", uid, resolved, code)
+        await cb.message.answer("⚠️ Не удалось получить данные подписки. Попробуйте позже.")
+        return await cb.answer()
+    user_data = _parse_json(text)
+    if not isinstance(user_data, dict):
+        await cb.message.answer("⚠️ Не удалось получить данные подписки. Попробуйте позже.")
         return await cb.answer()
 
-    await cb.message.answer(
-        "📄 Твоя ссылка подписки:\n"
-        f"{link}\n\n"
-        "♻️ Если не обновляется — нажми «Перевыпустить ссылку».\n\n"
-        "📱 Как подключиться (iPhone / iOS)\n"
-        "Рекомендуем: Hiddify (самый простой вариант)\n\n"
-        "1️⃣ Установи Hiddify из App Store\n"
-        "2️⃣ Открой «📎 Моя подписка» → «📄 Показать ссылку»\n"
-        "3️⃣ В Hiddify: Import from URL → вставь ссылку\n"
-        "4️⃣ Нажми Connect\n\n"
-        "Если используешь Shadowrocket:\n"
-        "— добавь подписку через Subscribe / URL и подключись."
-    )
+    usage_data = None
+    u_code, u_text = await api_get_user_usage(resolved)
+    if u_code == 200:
+        usage_data = _parse_json(u_text)
+        if not isinstance(usage_data, dict):
+            usage_data = None
+    else:
+        logging.warning("subscription: tg_id=%s username=%s usage_code=%s", uid, resolved, u_code)
+
+    logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
+    await cb.message.answer(format_subscription(user_data, usage_data))
     return await cb.answer()
 
 
