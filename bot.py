@@ -11,8 +11,8 @@ import urllib3
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import CommandStart, Command
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ----------------- settings -----------------
@@ -258,6 +258,129 @@ async def ensure_reply_keyboard(chat_id: int):
             pass
     except Exception:
         pass
+
+
+async def handle_getvpn(tg_user, chat_id: int):
+    uid = tg_user.id
+    if TEST_MODE_ENABLED:
+        add_allowed(uid)
+        created, resolved, err = await ensure_user_exists(uid, tg_user.username)
+        if err == "auth":
+            await show_screen(chat_id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_guest())
+            return
+        if err == "validation":
+            await show_screen(chat_id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_guest())
+            return
+        if err and err.startswith("http_"):
+            await show_screen(chat_id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_guest())
+            return
+        if not resolved:
+            await show_screen(chat_id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_guest())
+            return
+
+        link = await get_subscription_link(resolved)
+        if link:
+            text = (
+                f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}\n\n"
+                "✅ Доступ одобрен!\n\n"
+                "📎 Твоя ссылка подписки (вставь в Hiddify как Subscription URL):\n"
+                f"{link}\n\n"
+                "Дальше открой «🚀 Как подключиться» и выбери своё устройство."
+            )
+        else:
+            text = (
+                f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}\n\n"
+                "✅ Доступ одобрен!\n\n"
+                "⚠️ Не смог сформировать ссылку подписки.\n"
+                "Попроси администратора проверить настройки."
+            )
+        await show_screen(chat_id, uid, text, kb_main())
+        return
+
+    if is_allowed(uid):
+        await show_screen(chat_id, uid, "✅ У тебя уже есть доступ.", kb_main())
+        return
+
+    if is_pending(uid):
+        await show_screen(chat_id, uid, "⏳ Заявка уже отправлена. Ждём подтверждения.", kb_guest())
+        return
+
+    add_pending(uid)
+    if ADMIN_TG_ID is not None:
+        await bot.send_message(
+            ADMIN_TG_ID,
+            "📋 Новая заявка на доступ:\n"
+            f"• {short_name(tg_user)}\n"
+            f"• id: {uid}",
+            reply_markup=kb_admin_request(uid),
+        )
+
+    await show_screen(chat_id, uid, "✅ Заявка отправлена. Как только одобрят — я пришлю ссылку подписки.", kb_guest())
+
+
+def help_text() -> str:
+    return (
+        "❓ Помощь\n\n"
+        "Если не подключается:\n"
+        "1) Обнови подписку в приложении (или добавь заново)\n"
+        "2) Переключи сеть (Wi‑Fi/мобильная)\n"
+        "3) Если всё равно не работает — напиши администратору\n\n"
+        "Контакт администратора: (добавь сюда свой @username)\n"
+    )
+
+
+async def handle_subscription(tg_user, chat_id: int):
+    uid = tg_user.id
+    if not is_allowed(uid):
+        await show_screen(chat_id, uid, "Сначала получи доступ 👇", kb_guest())
+        return
+
+    resolved = await resolve_marzban_username(uid, tg_user.username)
+    if not resolved:
+        created, resolved, err = await ensure_user_exists(uid, tg_user.username)
+        if err == "auth":
+            await show_screen(chat_id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_submenu())
+            return
+        if err == "not_found":
+            await show_screen(chat_id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_submenu())
+            return
+        if err == "validation":
+            await show_screen(chat_id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_submenu())
+            return
+        if err and err.startswith("http_"):
+            await show_screen(chat_id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_submenu())
+            return
+        if not resolved:
+            await show_screen(chat_id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_submenu())
+            return
+        await show_screen(
+            chat_id,
+            uid,
+            f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}",
+            kb_submenu(),
+        )
+
+    code, text = await api_get_user(resolved)
+    if code != 200:
+        logging.warning("subscription: tg_id=%s username=%s code=%s", uid, resolved, code)
+        await show_screen(chat_id, uid, "⚠️ Не удалось получить данные подписки. Попробуйте позже.", kb_submenu())
+        return
+    user_data = _parse_json(text)
+    if not isinstance(user_data, dict):
+        await show_screen(chat_id, uid, "⚠️ Не удалось получить данные подписки. Попробуйте позже.", kb_submenu())
+        return
+
+    usage_data = None
+    u_code, u_text = await api_get_user_usage(resolved)
+    if u_code == 200:
+        usage_data = _parse_json(u_text)
+        if not isinstance(usage_data, dict):
+            usage_data = None
+    else:
+        logging.warning("subscription: tg_id=%s username=%s usage_code=%s", uid, resolved, u_code)
+
+    logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
+    await show_screen(chat_id, uid, format_subscription(user_data, usage_data), kb_subscription_actions())
 
 
 async def api_get_user(username: str):
@@ -663,6 +786,67 @@ async def start(message: Message):
         )
 
 
+@dp.message(Command("menu"))
+async def cmd_menu(message: Message):
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    await ensure_reply_keyboard(message.chat.id)
+    if is_allowed(message.from_user.id):
+        await show_screen(message.chat.id, message.from_user.id, "Главное меню:", kb_main())
+    else:
+        await show_screen(message.chat.id, message.from_user.id, "Сначала получи доступ 👇", kb_guest())
+
+
+@dp.message(Command("tariffs"))
+async def cmd_tariffs(message: Message):
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    await ensure_reply_keyboard(message.chat.id)
+    if is_allowed(message.from_user.id):
+        await show_screen(message.chat.id, message.from_user.id, "💳 Тарифы:", kb_tariffs())
+    else:
+        await show_screen(message.chat.id, message.from_user.id, "Сначала получи доступ 👇", kb_guest())
+
+
+@dp.message(Command("subscription"))
+async def cmd_subscription(message: Message):
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    await ensure_reply_keyboard(message.chat.id)
+    await handle_subscription(message.from_user, message.chat.id)
+
+
+@dp.message(Command("getvpn"))
+async def cmd_getvpn(message: Message):
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    await ensure_reply_keyboard(message.chat.id)
+    await handle_getvpn(message.from_user, message.chat.id)
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    await ensure_reply_keyboard(message.chat.id)
+    await show_screen(
+        message.chat.id,
+        message.from_user.id,
+        help_text(),
+        kb_main() if is_allowed(message.from_user.id) else kb_guest(),
+    )
+
+
 @dp.callback_query(F.data == "back_main")
 async def back_main(cb: CallbackQuery):
     uid = cb.from_user.id
@@ -675,79 +859,19 @@ async def back_main(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "help")
 async def help_cb(cb: CallbackQuery):
-    txt = (
-        "🆘 Помощь\n\n"
-        "Если не подключается:\n"
-        "1) Обнови подписку в приложении (или добавь заново)\n"
-        "2) Переключи сеть (Wi-Fi/мобильная)\n"
-        "3) Если всё равно не работает — напиши администратору\n\n"
-        "Контакт администратора: (добавь сюда свой @username)\n"
+    await show_screen(
+        cb.message.chat.id,
+        cb.from_user.id,
+        help_text(),
+        kb_main() if is_allowed(cb.from_user.id) else kb_guest(),
     )
-    await cb.message.answer(txt)
     await cb.answer()
 
 
 # -------- access flow --------
 @dp.callback_query(F.data == "req_access")
 async def req_access(cb: CallbackQuery):
-    uid = cb.from_user.id
-
-    if TEST_MODE_ENABLED:
-        add_allowed(uid)
-        created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
-        if err == "auth":
-            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_guest())
-            return await cb.answer()
-        if err == "validation":
-            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_guest())
-            return await cb.answer()
-        if err and err.startswith("http_"):
-            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_guest())
-            return await cb.answer()
-        if not resolved:
-            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_guest())
-            return await cb.answer()
-
-        link = await get_subscription_link(resolved)
-        if link:
-            text = (
-                f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}\n\n"
-                "✅ Доступ одобрен!\n\n"
-                "📎 Твоя ссылка подписки (вставь в Hiddify как Subscription URL):\n"
-                f"{link}\n\n"
-                "Дальше открой «🚀 Как подключиться» и выбери своё устройство."
-            )
-        else:
-            text = (
-                f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}\n\n"
-                "✅ Доступ одобрен!\n\n"
-                "⚠️ Не смог сформировать ссылку подписки.\n"
-                "Попроси администратора проверить настройки."
-            )
-        await show_screen(cb.message.chat.id, uid, text, kb_main())
-        return await cb.answer()
-
-    if is_allowed(uid):
-        await cb.message.answer("✅ У тебя уже есть доступ.", reply_markup=kb_main())
-        return await cb.answer()
-
-    if is_pending(uid):
-        await cb.message.answer("⏳ Заявка уже отправлена. Ждём подтверждения.")
-        return await cb.answer()
-
-    add_pending(uid)
-
-    # уведомление админу
-    if ADMIN_TG_ID is not None:
-        await bot.send_message(
-            ADMIN_TG_ID,
-            f"📝 Новая заявка на доступ:\n"
-            f"• {short_name(cb.from_user)}\n"
-            f"• id: {uid}",
-            reply_markup=kb_admin_request(uid),
-        )
-
-    await cb.message.answer("✅ Заявка отправлена. Как только одобрят — я пришлю ссылку подписки.")
+    await handle_getvpn(cb.from_user, cb.message.chat.id)
     await cb.answer()
 
 
@@ -939,57 +1063,7 @@ async def plan_apply(cb: CallbackQuery):
 # -------- subscription actions --------
 @dp.callback_query(F.data == "sub_show")
 async def sub_show(cb: CallbackQuery):
-    uid = cb.from_user.id
-    if not is_allowed(uid):
-        await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
-        return await cb.answer()
-
-    resolved = await resolve_marzban_username(uid, cb.from_user.username)
-    if not resolved:
-        created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
-        if err == "auth":
-            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_submenu())
-            return await cb.answer()
-        if err == "not_found":
-            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_submenu())
-            return await cb.answer()
-        if err == "validation":
-            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_submenu())
-            return await cb.answer()
-        if err and err.startswith("http_"):
-            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_submenu())
-            return await cb.answer()
-        if not resolved:
-            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_submenu())
-            return await cb.answer()
-        await show_screen(
-            cb.message.chat.id,
-            uid,
-            f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}",
-            kb_submenu(),
-        )
-
-    code, text = await api_get_user(resolved)
-    if code != 200:
-        logging.warning("subscription: tg_id=%s username=%s code=%s", uid, resolved, code)
-        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные подписки. Попробуйте позже.", kb_submenu())
-        return await cb.answer()
-    user_data = _parse_json(text)
-    if not isinstance(user_data, dict):
-        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные подписки. Попробуйте позже.", kb_submenu())
-        return await cb.answer()
-
-    usage_data = None
-    u_code, u_text = await api_get_user_usage(resolved)
-    if u_code == 200:
-        usage_data = _parse_json(u_text)
-        if not isinstance(usage_data, dict):
-            usage_data = None
-    else:
-        logging.warning("subscription: tg_id=%s username=%s usage_code=%s", uid, resolved, u_code)
-
-    logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
-    await show_screen(cb.message.chat.id, uid, format_subscription(user_data, usage_data), kb_subscription_actions())
+    await handle_subscription(cb.from_user, cb.message.chat.id)
     return await cb.answer()
 
 
@@ -1199,6 +1273,13 @@ async def fallback_callback(cb: CallbackQuery):
 
 async def main():
     logging.info("Bot started")
+    await bot.set_my_commands([
+        BotCommand(command="menu", description="🏠 Меню"),
+        BotCommand(command="tariffs", description="💳 Тарифы"),
+        BotCommand(command="subscription", description="📊 Моя подписка"),
+        BotCommand(command="getvpn", description="🔑 Получить VPN"),
+        BotCommand(command="help", description="ℹ️ Помощь"),
+    ])
     await dp.start_polling(bot)
 
 
