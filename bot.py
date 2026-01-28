@@ -2,7 +2,7 @@ import os
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import urllib.parse
 import uuid
 
@@ -34,10 +34,20 @@ TEST_MODE_RAW = (os.getenv("TEST_MODE") or "1").strip()
 TEST_MODE_ENABLED = TEST_MODE_RAW != "0"
 DEFAULT_INBOUND_TAG = (os.getenv("DEFAULT_INBOUND_TAG") or "VLESS TCP REALITY").strip()
 
+MONTH_PRICE_RUB = 150
+YEAR_DISCOUNT = 0.15
+YEAR_PRICE_RUB = int(round(MONTH_PRICE_RUB * 12 * (1 - YEAR_DISCOUNT)))
+PLANS = {
+    "trial_7d": {"days": 7, "price": 0, "title": "Trial — 7 дней"},
+    "month_30d": {"days": 30, "price": MONTH_PRICE_RUB, "title": "1 месяц"},
+    "year_365d": {"days": 365, "price": YEAR_PRICE_RUB, "title": "1 год"},
+}
+
 DATA_DIR = "/opt/marzban-tg-bot/data"
 ALLOWED_PATH = f"{DATA_DIR}/allowed.json"
 PENDING_PATH = f"{DATA_DIR}/pending.json"
 USER_MAP_PATH = f"{DATA_DIR}/user_map.json"
+TRIAL_USED_PATH = f"{DATA_DIR}/trial_used.json"
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN is empty in .env")
@@ -163,6 +173,20 @@ async def api_post(path: str, payload: dict):
     return await asyncio.to_thread(_do)
 
 
+async def api_put(path: str, payload: dict):
+    url = f"{MARZBAN_BASE_URL}{path}"
+
+    def _do():
+        try:
+            r = SESSION.put(url, json=payload)
+            return r.status_code, r.text
+        except Exception as exc:
+            logging.warning("api_put failed: url=%s error=%s", url, exc)
+            return 0, str(exc)
+
+    return await asyncio.to_thread(_do)
+
+
 def canonical_username(tg_id: int) -> str:
     return f"tg_{tg_id}"
 
@@ -187,6 +211,17 @@ def _get_user_mapping(tg_id: int) -> str | None:
     return data.get(str(tg_id))
 
 
+def _trial_used(tg_id: int) -> bool:
+    data = _read_json_map(TRIAL_USED_PATH)
+    return bool(data.get(str(tg_id)))
+
+
+def _mark_trial_used(tg_id: int) -> None:
+    data = _read_json_map(TRIAL_USED_PATH)
+    data[str(tg_id)] = True
+    _write_json_map(TRIAL_USED_PATH, data)
+
+
 async def api_get_user(username: str):
     encoded = _quote_username(username)
     return await api_get(f"/api/user/{encoded}")
@@ -200,6 +235,11 @@ async def api_get_user_usage(username: str):
 async def api_revoke_sub(username: str):
     encoded = _quote_username(username)
     return await api_post(f"/api/user/{encoded}/revoke_sub", {})
+
+
+async def api_put_user(username: str, payload: dict):
+    encoded = _quote_username(username)
+    return await api_put(f"/api/user/{encoded}", payload)
 
 
 async def api_find_user_by_username(username: str):
@@ -272,6 +312,10 @@ def _format_date(dt_raw) -> str:
     if isinstance(dt_raw, str):
         return dt_raw.replace("T", " ").split(".")[0].replace("Z", "")
     return str(dt_raw)
+
+
+def _expire_to_api(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def format_subscription(user_json: dict, usage_json: dict | None) -> str:
@@ -355,6 +399,7 @@ def kb_guest():
 def kb_main():
     kb = InlineKeyboardBuilder()
     kb.button(text="📎 Моя подписка", callback_data="menu_sub")
+    kb.button(text="💳 Тарифы", callback_data="menu_tariffs")
     kb.button(text="🚀 Как подключиться", callback_data="menu_connect")
     kb.button(text="📊 Статус", callback_data="status")
     kb.button(text="🆘 Помощь", callback_data="help")
@@ -366,6 +411,7 @@ def kb_submenu():
     kb = InlineKeyboardBuilder()
     kb.button(text="📄 Показать ссылку", callback_data="sub_show")
     kb.button(text="♻️ Перевыпустить ссылку", callback_data="sub_revoke")
+    kb.button(text="🔁 Продлить / сменить план", callback_data="menu_tariffs")
     kb.button(text="🔙 Назад", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -378,6 +424,23 @@ def kb_connect():
     kb.button(text="💻 Windows", callback_data="how_windows")
     kb.button(text="🍏 macOS", callback_data="how_macos")
     kb.button(text="🔙 Назад", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_tariffs():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎁 Trial — 7 дней (0₽)", callback_data="plan:trial_7d")
+    kb.button(text="📅 1 месяц — 150₽", callback_data="plan:month_30d")
+    kb.button(text=f"💎 1 год — {YEAR_PRICE_RUB}₽ (-15%)", callback_data="plan:year_365d")
+    kb.button(text="⬅️ Назад", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_subscription_actions():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔁 Продлить / сменить план", callback_data="menu_tariffs")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -758,6 +821,100 @@ async def menu_connect(cb: CallbackQuery):
     await cb.answer()
 
 
+@dp.callback_query(F.data == "menu_tariffs")
+async def menu_tariffs(cb: CallbackQuery):
+    if not is_allowed(cb.from_user.id):
+        try:
+            await cb.message.edit_text("Сначала получи доступ 👇", reply_markup=kb_guest())
+        except Exception:
+            await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        return await cb.answer()
+    try:
+        await cb.message.edit_text("💳 Тарифы:", reply_markup=kb_tariffs())
+    except Exception:
+        await cb.message.answer("💳 Тарифы:", reply_markup=kb_tariffs())
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("plan:"))
+async def plan_apply(cb: CallbackQuery):
+    uid = cb.from_user.id
+    if not is_allowed(uid):
+        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        return await cb.answer()
+
+    plan_id = cb.data.split(":", 1)[1]
+    plan = PLANS.get(plan_id)
+    if not plan:
+        await cb.message.answer("⚠️ Неизвестный тариф.")
+        return await cb.answer()
+
+    if plan_id == "trial_7d" and _trial_used(uid):
+        await cb.message.answer(
+            "⛔ Trial уже использован. Выберите месяц или год.",
+            reply_markup=kb_tariffs(),
+        )
+        return await cb.answer()
+
+    if plan_id != "trial_7d" and not TEST_MODE_ENABLED:
+        await cb.message.answer("Для активации выберите оплату (скоро).", reply_markup=kb_tariffs())
+        return await cb.answer()
+
+    resolved = await resolve_marzban_username(uid, cb.from_user.username)
+    if not resolved:
+        created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
+        if err == "auth":
+            await cb.message.answer("⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.")
+            return await cb.answer()
+        if err == "not_found":
+            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            return await cb.answer()
+        if err == "validation":
+            await cb.message.answer("⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.")
+            return await cb.answer()
+        if err and err.startswith("http_"):
+            await cb.message.answer("⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.")
+            return await cb.answer()
+        if not resolved:
+            await cb.message.answer("❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.")
+            return await cb.answer()
+
+    now = datetime.now(timezone.utc)
+    expire_dt = now + timedelta(days=plan["days"])
+    expire_api = _expire_to_api(expire_dt)
+
+    note_base = ""
+    code_u, text_u = await api_get_user(resolved)
+    if code_u == 200:
+        data_u = _parse_json(text_u)
+        if isinstance(data_u, dict):
+            note_base = (data_u.get("note") or "").strip()
+    else:
+        logging.warning("plan: tg_id=%s username=%s code=%s", uid, resolved, code_u)
+
+    set_at = now.strftime("%Y-%m-%d %H:%M UTC")
+    note_add = f"plan={plan_id} paid={plan['price']} set_at={set_at}"
+    note = f"{note_base} | {note_add}".strip(" |") if note_base else note_add
+
+    code, text = await api_put_user(resolved, {"expire": expire_api, "note": note})
+    if code not in (200, 204):
+        logging.warning("plan: tg_id=%s username=%s code=%s text=%s", uid, resolved, code, text[:200])
+        await cb.message.answer("⚠️ Не удалось применить тариф. Попробуйте позже.")
+        return await cb.answer()
+
+    if plan_id == "trial_7d":
+        _mark_trial_used(uid)
+
+    human_title = plan["title"]
+    until_txt = expire_dt.strftime("%d.%m.%Y")
+    await cb.message.answer(
+        f"✅ План активирован: {human_title}\n"
+        f"⏳ Действует до: {until_txt}",
+        reply_markup=kb_submenu(),
+    )
+    await cb.answer()
+
+
 # -------- subscription actions --------
 @dp.callback_query(F.data == "sub_show")
 async def sub_show(cb: CallbackQuery):
@@ -808,7 +965,7 @@ async def sub_show(cb: CallbackQuery):
         logging.warning("subscription: tg_id=%s username=%s usage_code=%s", uid, resolved, u_code)
 
     logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
-    await cb.message.answer(format_subscription(user_data, usage_data))
+    await cb.message.answer(format_subscription(user_data, usage_data), reply_markup=kb_subscription_actions())
     return await cb.answer()
 
 
