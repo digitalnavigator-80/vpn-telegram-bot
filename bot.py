@@ -35,6 +35,8 @@ TEST_MODE_ENABLED = TEST_MODE_RAW != "0"
 DEFAULT_INBOUND_TAG = (os.getenv("DEFAULT_INBOUND_TAG") or "VLESS TCP REALITY").strip()
 PLANS_UNLIMITED_RAW = (os.getenv("PLANS_UNLIMITED") or "1").strip()
 PLANS_UNLIMITED_ENABLED = PLANS_UNLIMITED_RAW != "0"
+PAYMENT_TEST_MODE_RAW = (os.getenv("PAYMENT_TEST_MODE") or "1").strip()
+PAYMENT_TEST_MODE_ENABLED = PAYMENT_TEST_MODE_RAW != "0"
 
 TRIAL_DAYS = int((os.getenv("TRIAL_DAYS") or "7").strip())
 TRIAL_DATA_LIMIT_GB = int((os.getenv("TRIAL_DATA_LIMIT_GB") or "5").strip())
@@ -56,6 +58,7 @@ PENDING_PATH = f"{DATA_DIR}/pending.json"
 USER_MAP_PATH = f"{DATA_DIR}/user_map.json"
 TRIAL_USED_PATH = f"{DATA_DIR}/trial_used.json"
 PLAN_SELECTED_PATH = f"{DATA_DIR}/plan_selected.json"
+PAYMENT_REQUESTS_PATH = f"{DATA_DIR}/payment_requests.json"
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN is empty in .env")
@@ -242,6 +245,12 @@ def set_selected_plan(tg_id: int, plan_id: str) -> None:
     save_json(PLAN_SELECTED_PATH, data)
 
 
+def save_payment_request(request_id: str, payload: dict) -> None:
+    data = load_json(PAYMENT_REQUESTS_PATH, {})
+    data[request_id] = payload
+    save_json(PAYMENT_REQUESTS_PATH, data)
+
+
 def reply_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="🏠 Меню")]],
@@ -348,6 +357,22 @@ def help_text() -> str:
     )
 
 
+def payment_screen_text(plan_id: str) -> str:
+    if plan_id == "year_365d":
+        return (
+            "💳 Оплата тарифа: 1 год\n"
+            f"Сумма: {YEAR_PRICE_RUB} ₽ (-15%)\n\n"
+            "Способы оплаты скоро появятся.\n"
+            "Сейчас доступен Trial (безлимит, бессрочно)."
+        )
+    return (
+        "💳 Оплата тарифа: 1 месяц\n"
+        f"Сумма: {MONTH_PRICE_RUB} ₽\n\n"
+        "Способы оплаты скоро появятся.\n"
+        "Сейчас доступен Trial (безлимит, бессрочно)."
+    )
+
+
 async def handle_subscription(tg_user, chat_id: int):
     uid = tg_user.id
     if not is_allowed(uid):
@@ -400,9 +425,10 @@ async def handle_subscription(tg_user, chat_id: int):
 
     if PLANS_UNLIMITED_ENABLED:
         plan_id = get_selected_plan(uid)
-        if plan_id == "trial_7d":
+        if plan_id in ("trial_7d", "month_30d", "year_365d"):
+            plan_title = "Trial" if plan_id == "trial_7d" else ("1 месяц" if plan_id == "month_30d" else "1 год")
             text = (
-                "💳 Тариф: Trial\n"
+                f"💳 Тариф: {plan_title}\n"
                 "🧪 Тестовый режим\n"
                 "∞ Трафик: безлимит\n"
                 "⏳ Срок действия: без ограничений"
@@ -631,6 +657,7 @@ def kb_main():
     kb = InlineKeyboardBuilder()
     kb.button(text="📎 Моя подписка", callback_data="menu_sub")
     kb.button(text="💳 Тарифы", callback_data="menu_tariffs")
+    kb.button(text="?? ??????", callback_data="menu_payment")
     kb.button(text="🚀 Как подключиться", callback_data="menu_connect")
     kb.button(text="📊 Статус", callback_data="status")
     kb.button(text="🆘 Помощь", callback_data="help")
@@ -696,6 +723,16 @@ def kb_plan_selected():
 def kb_trial_only():
     kb = InlineKeyboardBuilder()
     kb.button(text="🎁 Trial", callback_data="plan:trial_7d")
+    kb.button(text="🏠 Меню", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_payment(plan_id: str):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Я оплатил (тест)", callback_data=f"pay_test:{plan_id}")
+    kb.button(text="🎁 Trial", callback_data="plan:trial_7d")
+    kb.button(text="⬅️ Назад к тарифам", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -1073,6 +1110,107 @@ async def menu_tariffs(cb: CallbackQuery):
     await cb.answer()
 
 
+@dp.callback_query(F.data == "menu_payment")
+async def menu_payment(cb: CallbackQuery):
+    if not is_allowed(cb.from_user.id):
+        await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
+        return await cb.answer()
+    await show_screen(cb.message.chat.id, cb.from_user.id, "💳 Оплата: выберите тариф", kb_tariffs())
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("pay_test:"))
+async def pay_test(cb: CallbackQuery):
+    uid = cb.from_user.id
+    if not is_allowed(uid):
+        await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
+        return await cb.answer()
+
+    plan_id = cb.data.split(":", 1)[1]
+    if plan_id not in ("month_30d", "year_365d"):
+        await show_screen(cb.message.chat.id, uid, "⚠️ Неизвестный тариф.", kb_tariffs())
+        return await cb.answer()
+
+    if not PAYMENT_TEST_MODE_ENABLED:
+        logging.warning("pay: disabled test_mode=0 tg_id=%s plan=%s", uid, "month" if plan_id == "month_30d" else "year")
+        await show_screen(
+            cb.message.chat.id,
+            uid,
+            "🚫 Тестовый режим оплаты выключен\nОплата скоро появится.",
+            kb_payment(plan_id),
+        )
+        return await cb.answer()
+
+    resolved = await resolve_marzban_username(uid, cb.from_user.username)
+    if not resolved:
+        created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
+        if err == "auth":
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_payment(plan_id))
+            return await cb.answer()
+        if err == "not_found":
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_payment(plan_id))
+            return await cb.answer()
+        if err == "validation":
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_payment(plan_id))
+            return await cb.answer()
+        if err and err.startswith("http_"):
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_payment(plan_id))
+            return await cb.answer()
+        if not resolved:
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_payment(plan_id))
+            return await cb.answer()
+
+    now = datetime.now(timezone.utc)
+    request_id = f"REQ_{now.strftime('%Y%m%d_%H%M%S')}_{uid}"
+    plan_short = "month" if plan_id == "month_30d" else "year"
+    amount = MONTH_PRICE_RUB if plan_id == "month_30d" else YEAR_PRICE_RUB
+    created_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    logging.info("pay: create request_id=%s tg_id=%s plan=%s amount=%s", request_id, uid, plan_short, amount)
+    save_payment_request(
+        request_id,
+        {
+            "tg_id": uid,
+            "username": resolved,
+            "plan": plan_short,
+            "amount_rub": amount,
+            "status": "paid_test",
+            "created_at": created_at,
+        },
+    )
+
+    code_u, text_u = await api_get_user(resolved)
+    if code_u != 200:
+        logging.warning("pay: tg_id=%s username=%s code=%s body=%s", uid, resolved, code_u, text_u[:200])
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные пользователя. Попробуйте позже.", kb_payment(plan_id))
+        return await cb.answer()
+    data_u = _parse_json(text_u)
+    if not isinstance(data_u, dict):
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные пользователя. Попробуйте позже.", kb_payment(plan_id))
+        return await cb.answer()
+
+    note_base = (data_u.get("note") or "").strip()
+    note_add = f"plan={plan_short} paid_test=1 amount={amount} request_id={request_id}"
+    note = f"{note_base} | {note_add}".strip(" |") if note_base else note_add
+
+    payload = {"expire": None, "data_limit": None, "note": note}
+    code, text = await api_put_user(resolved, payload)
+    if code not in (200, 204):
+        logging.warning("pay: tg_id=%s username=%s code=%s body=%s", uid, resolved, code, text[:200])
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось применить тариф. Попробуйте позже.", kb_payment(plan_id))
+        return await cb.answer()
+
+    set_selected_plan(uid, plan_id)
+    logging.info("pay: paid_test request_id=%s tg_id=%s plan=%s", request_id, uid, plan_short)
+    human_title = "1 месяц" if plan_id == "month_30d" else "1 год"
+    await show_screen(
+        cb.message.chat.id,
+        uid,
+        f"✅ Оплата подтверждена (тест)\nТариф активирован: {human_title}",
+        kb_plan_selected(),
+    )
+    await cb.answer()
+
+
 @dp.callback_query(F.data.startswith("plan:"))
 async def plan_apply(cb: CallbackQuery):
     uid = cb.from_user.id
@@ -1096,13 +1234,7 @@ async def plan_apply(cb: CallbackQuery):
         return await cb.answer()
 
     if PLANS_UNLIMITED_ENABLED and plan_id in ("month_30d", "year_365d"):
-        logging.info("plan: tg_id=%s plan=%s status=disabled", uid, "month" if plan_id == "month_30d" else "year")
-        await show_screen(
-            cb.message.chat.id,
-            uid,
-            "🚧 Тариф в разработке\nЭтот тариф скоро появится.\nСледите за обновлениями 👀",
-            kb_trial_only(),
-        )
+        await show_screen(cb.message.chat.id, uid, payment_screen_text(plan_id), kb_payment(plan_id))
         return await cb.answer()
 
     if plan_id != "trial_7d" and not TEST_MODE_ENABLED:
