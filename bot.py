@@ -358,7 +358,7 @@ def help_text() -> str:
 
 
 def payment_screen_text(plan_id: str) -> str:
-    if plan_id == "year_365d":
+    if plan_id in ("year_365d", "year"):
         return (
             "💳 Оплата тарифа: 1 год\n"
             f"Сумма: {YEAR_PRICE_RUB} ₽ (-15%)\n\n"
@@ -689,8 +689,8 @@ def kb_connect():
 def kb_tariffs():
     kb = InlineKeyboardBuilder()
     kb.button(text="🎁 Trial — 7 дней (0₽)", callback_data="plan:trial_7d")
-    kb.button(text="📅 1 месяц — 150₽", callback_data="plan:month_30d")
-    kb.button(text=f"💎 1 год — {YEAR_PRICE_RUB}₽ (-15%)", callback_data="plan:year_365d")
+    kb.button(text="📅 1 месяц — 150₽", callback_data="pay:choose:month")
+    kb.button(text=f"💎 1 год — {YEAR_PRICE_RUB}₽ (-15%)", callback_data="pay:choose:year")
     kb.button(text="⬅️ Назад", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -705,8 +705,8 @@ def kb_subscription_actions():
 
 def kb_trial_used():
     kb = InlineKeyboardBuilder()
-    kb.button(text="📅 1 месяц", callback_data="plan:month_30d")
-    kb.button(text=f"💎 1 год — {YEAR_PRICE_RUB}₽ (-15%)", callback_data="plan:year_365d")
+    kb.button(text="📅 1 месяц", callback_data="pay:choose:month")
+    kb.button(text=f"💎 1 год — {YEAR_PRICE_RUB}₽ (-15%)", callback_data="pay:choose:year")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -730,9 +730,18 @@ def kb_trial_only():
 
 def kb_payment(plan_id: str):
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Я оплатил (тест)", callback_data=f"pay_test:{plan_id}")
+    kb.button(text="✅ Я оплатил (тест)", callback_data=f"pay:confirm_test:{plan_id}")
     kb.button(text="🎁 Trial", callback_data="plan:trial_7d")
-    kb.button(text="⬅️ Назад к тарифам", callback_data="menu_tariffs")
+    kb.button(text="⬅️ Назад", callback_data="pay:open")
+    kb.button(text="🏠 Меню", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_payment_choose():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📅 1 месяц", callback_data="pay:choose:month")
+    kb.button(text="💎 1 год", callback_data="pay:choose:year")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -1115,29 +1124,55 @@ async def menu_payment(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
         await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    await show_screen(cb.message.chat.id, cb.from_user.id, "💳 Оплата: выберите тариф", kb_tariffs())
+    logging.info("pay: open tg_id=%s", cb.from_user.id)
+    await show_screen(cb.message.chat.id, cb.from_user.id, "💳 Оплата: выберите тариф", kb_payment_choose())
     await cb.answer()
 
 
-@dp.callback_query(F.data.startswith("pay_test:"))
+@dp.callback_query(F.data == "pay:open")
+async def pay_open(cb: CallbackQuery):
+    if not is_allowed(cb.from_user.id):
+        await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
+        return await cb.answer()
+    logging.info("pay: open tg_id=%s", cb.from_user.id)
+    await show_screen(cb.message.chat.id, cb.from_user.id, "💳 Оплата: выберите тариф", kb_payment_choose())
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("pay:choose:"))
+async def pay_choose(cb: CallbackQuery):
+    uid = cb.from_user.id
+    if not is_allowed(uid):
+        await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
+        return await cb.answer()
+    plan_short = cb.data.split(":", 2)[2]
+    if plan_short not in ("month", "year"):
+        await show_screen(cb.message.chat.id, uid, "⚠️ Неизвестный тариф.", kb_payment_choose())
+        return await cb.answer()
+    logging.info("pay: show plan tg_id=%s plan=%s", uid, plan_short)
+    await show_screen(cb.message.chat.id, uid, payment_screen_text(plan_short), kb_payment(plan_short))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("pay:confirm_test:"))
 async def pay_test(cb: CallbackQuery):
     uid = cb.from_user.id
     if not is_allowed(uid):
         await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
 
-    plan_id = cb.data.split(":", 1)[1]
-    if plan_id not in ("month_30d", "year_365d"):
-        await show_screen(cb.message.chat.id, uid, "⚠️ Неизвестный тариф.", kb_tariffs())
+    plan_short = cb.data.split(":", 2)[2]
+    if plan_short not in ("month", "year"):
+        await show_screen(cb.message.chat.id, uid, "⚠️ Неизвестный тариф.", kb_payment_choose())
         return await cb.answer()
 
     if not PAYMENT_TEST_MODE_ENABLED:
-        logging.warning("pay: disabled test_mode=0 tg_id=%s plan=%s", uid, "month" if plan_id == "month_30d" else "year")
+        logging.warning("pay: disabled test_mode=0 tg_id=%s plan=%s", uid, plan_short)
         await show_screen(
             cb.message.chat.id,
             uid,
             "🚫 Тестовый режим оплаты выключен\nОплата скоро появится.",
-            kb_payment(plan_id),
+            kb_payment(plan_short),
         )
         return await cb.answer()
 
@@ -1145,25 +1180,24 @@ async def pay_test(cb: CallbackQuery):
     if not resolved:
         created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
         if err == "auth":
-            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_payment(plan_id))
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_payment(plan_short))
             return await cb.answer()
         if err == "not_found":
-            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_payment(plan_id))
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_payment(plan_short))
             return await cb.answer()
         if err == "validation":
-            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_payment(plan_id))
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_payment(plan_short))
             return await cb.answer()
         if err and err.startswith("http_"):
-            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_payment(plan_id))
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_payment(plan_short))
             return await cb.answer()
         if not resolved:
-            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_payment(plan_id))
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_payment(plan_short))
             return await cb.answer()
 
     now = datetime.now(timezone.utc)
     request_id = f"REQ_{now.strftime('%Y%m%d_%H%M%S')}_{uid}"
-    plan_short = "month" if plan_id == "month_30d" else "year"
-    amount = MONTH_PRICE_RUB if plan_id == "month_30d" else YEAR_PRICE_RUB
+    amount = MONTH_PRICE_RUB if plan_short == "month" else YEAR_PRICE_RUB
     created_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     logging.info("pay: create request_id=%s tg_id=%s plan=%s amount=%s", request_id, uid, plan_short, amount)
     save_payment_request(
@@ -1181,11 +1215,11 @@ async def pay_test(cb: CallbackQuery):
     code_u, text_u = await api_get_user(resolved)
     if code_u != 200:
         logging.warning("pay: tg_id=%s username=%s code=%s body=%s", uid, resolved, code_u, text_u[:200])
-        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные пользователя. Попробуйте позже.", kb_payment(plan_id))
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные пользователя. Попробуйте позже.", kb_payment(plan_short))
         return await cb.answer()
     data_u = _parse_json(text_u)
     if not isinstance(data_u, dict):
-        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные пользователя. Попробуйте позже.", kb_payment(plan_id))
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные пользователя. Попробуйте позже.", kb_payment(plan_short))
         return await cb.answer()
 
     note_base = (data_u.get("note") or "").strip()
@@ -1196,12 +1230,12 @@ async def pay_test(cb: CallbackQuery):
     code, text = await api_put_user(resolved, payload)
     if code not in (200, 204):
         logging.warning("pay: tg_id=%s username=%s code=%s body=%s", uid, resolved, code, text[:200])
-        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось применить тариф. Попробуйте позже.", kb_payment(plan_id))
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось применить тариф. Попробуйте позже.", kb_payment(plan_short))
         return await cb.answer()
 
-    set_selected_plan(uid, plan_id)
+    set_selected_plan(uid, "month_30d" if plan_short == "month" else "year_365d")
     logging.info("pay: paid_test request_id=%s tg_id=%s plan=%s", request_id, uid, plan_short)
-    human_title = "1 месяц" if plan_id == "month_30d" else "1 год"
+    human_title = "1 месяц" if plan_short == "month" else "1 год"
     await show_screen(
         cb.message.chat.id,
         uid,
