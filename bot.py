@@ -400,15 +400,22 @@ async def handle_subscription(tg_user, chat_id: int):
 
     if PLANS_UNLIMITED_ENABLED:
         plan_id = get_selected_plan(uid)
-        plan_title = PLANS.get(plan_id, {}).get("title") if plan_id else None
-        plan_line = plan_title or "—"
+        if plan_id == "trial_7d":
+            text = (
+                "💳 Тариф: Trial\n"
+                "🧪 Тестовый режим\n"
+                "∞ Трафик: безлимит\n"
+                "⏳ Срок действия: без ограничений"
+            )
+            logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
+            await show_screen(chat_id, uid, text, kb_subscription_actions())
+            return
         text = (
-            f"💳 Тариф: {plan_line} (тестовый режим)\n"
-            "∞ Трафик: безлимит\n"
-            "⏳ Срок действия: без ограничений"
+            "ℹ️ Тариф не выбран\n"
+            "Вы можете начать с Trial 👇"
         )
         logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
-        await show_screen(chat_id, uid, text, kb_subscription_actions())
+        await show_screen(chat_id, uid, text, kb_trial_only())
         return
 
     logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
@@ -681,6 +688,14 @@ def kb_trial_used():
 def kb_plan_selected():
     kb = InlineKeyboardBuilder()
     kb.button(text="📊 Моя подписка", callback_data="sub_show")
+    kb.button(text="🏠 Меню", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_trial_only():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎁 Trial", callback_data="plan:trial_7d")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -1080,6 +1095,16 @@ async def plan_apply(cb: CallbackQuery):
         )
         return await cb.answer()
 
+    if PLANS_UNLIMITED_ENABLED and plan_id in ("month_30d", "year_365d"):
+        logging.info("plan: tg_id=%s plan=%s status=disabled", uid, "month" if plan_id == "month_30d" else "year")
+        await show_screen(
+            cb.message.chat.id,
+            uid,
+            "🚧 Тариф в разработке\nЭтот тариф скоро появится.\nСледите за обновлениями 👀",
+            kb_trial_only(),
+        )
+        return await cb.answer()
+
     if plan_id != "trial_7d" and not TEST_MODE_ENABLED:
         await show_screen(cb.message.chat.id, uid, "Для активации выберите оплату (скоро).", kb_tariffs())
         return await cb.answer()
@@ -1116,37 +1141,11 @@ async def plan_apply(cb: CallbackQuery):
     now = datetime.now(timezone.utc)
     note_base = (data_u.get("note") or "").strip()
     set_at = now.strftime("%Y-%m-%d %H:%M UTC")
-    note_add = f"plan={plan_id} price={plan['price']} test_mode={'1' if PLANS_UNLIMITED_ENABLED else '0'} set_at={set_at}"
+    note_add = f"plan={plan_id} price={plan['price']} test_mode=1 set_at={set_at}"
     note = f"{note_base} | {note_add}".strip(" |") if note_base else note_add
 
-    payload = {"note": note}
-    base_label = "now"
-    expire_dt = None
-    if not PLANS_UNLIMITED_ENABLED:
-        current_expire = parse_expire_from_user_json(data_u.get("expire"))
-        expire_dt, base_label = compute_expire(now, current_expire, plan["days"])
-        expire_api = format_expire_for_api(expire_dt)
-        payload["expire"] = expire_api
-        trial_limit_bytes = TRIAL_DATA_LIMIT_GB * 1024**3
-        if plan_id == "trial_7d":
-            payload["data_limit"] = trial_limit_bytes
-            payload["data_limit_reset_strategy"] = "no_reset"
-        else:
-            payload["data_limit"] = None
-            payload["data_limit_reset_strategy"] = "no_reset"
-        logging.info(
-            "plan: tg_id=%s username=%s plan=%s base=%s new_expire=%s data_limit=%s",
-            uid,
-            resolved,
-            plan_id,
-            base_label,
-            expire_api,
-            payload.get("data_limit"),
-        )
-    else:
-        payload["expire"] = None
-        payload["data_limit"] = None
-        logging.info("plan: tg_id=%s username=%s plan=%s unlimited=1", uid, resolved, plan_id)
+    payload = {"note": note, "expire": None, "data_limit": None}
+    logging.info("plan: tg_id=%s plan=trial unlimited=1", uid)
 
     code, text = await api_put_user(resolved, payload)
     if code not in (200, 204):
@@ -1155,19 +1154,18 @@ async def plan_apply(cb: CallbackQuery):
         return await cb.answer()
 
     set_selected_plan(uid, plan_id)
-    if plan_id == "trial_7d" and not PLANS_UNLIMITED_ENABLED:
-        mark_trial_used(uid)
 
     human_title = plan["title"]
-    if PLANS_UNLIMITED_ENABLED:
-        text = (
-            f"✅ Тариф выбран: {human_title}\n"
-            "🧪 Тестовый режим\n"
-            "∞ Безлимит\n"
-            "⏳ Без срока действия"
-        )
-        await show_screen(cb.message.chat.id, uid, text, kb_plan_selected())
-    else:
+    text = (
+        f"✅ Тариф выбран: {human_title}\n"
+        "🧪 Тестовый режим\n"
+        "∞ Безлимит\n"
+        "⏳ Без срока действия"
+    )
+    await show_screen(cb.message.chat.id, uid, text, kb_plan_selected())
+    return await cb.answer()
+
+    if False:
         until_txt = expire_dt.strftime("%d.%m.%Y") if expire_dt else "—"
         success_title = "🔁 Подписка продлена" if base_label == "extend" else "✅ План активирован"
         await show_screen(
