@@ -259,6 +259,16 @@ def save_payment_request(request_id: str, payload: dict) -> None:
     save_json(PAYMENT_REQUESTS_PATH, data)
 
 
+def is_yookassa_configured() -> bool:
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+        return False
+    if YOOKASSA_SHOP_ID in ("YOUR_SHOP_ID", "YOUR_SHOPID"):
+        return False
+    if YOOKASSA_SECRET_KEY in ("YOUR_SECRET_KEY", "YOUR_SECRETKEY"):
+        return False
+    return True
+
+
 def get_payment_request(payment_id: str) -> dict | None:
     data = load_json(PAYMENT_REQUESTS_PATH, {})
     item = data.get(payment_id)
@@ -396,6 +406,21 @@ def payment_screen_text(plan_id: str) -> str:
         "Нажмите «Перейти к оплате».\n"
         "После оплаты нажмите «Проверить оплату».\n\n"
         "Сейчас доступен Trial (безлимит, бессрочно)."
+    )
+
+
+def payment_unavailable_text() -> str:
+    return (
+        "🚧 Оплата пока недоступна\n"
+        "ЮKassa ещё на проверке.\n\n"
+        "🎁 Сейчас доступен Trial (безлимит, бессрочно)."
+    )
+
+
+def payment_service_down_text() -> str:
+    return (
+        "⚠️ Платёжный сервис временно недоступен.\n"
+        "Попробуйте позже или используйте Trial."
     )
 
 
@@ -872,6 +897,15 @@ def kb_trial_only():
     return kb.as_markup()
 
 
+def kb_payment_unavailable():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎁 Trial", callback_data="plan:trial_7d")
+    kb.button(text="⬅️ Назад к тарифам", callback_data="menu_tariffs")
+    kb.button(text="🏠 Меню", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def kb_payment(plan_id: str):
     kb = InlineKeyboardBuilder()
     if PAYMENT_TEST_MODE_ENABLED:
@@ -1306,11 +1340,16 @@ async def pay_choose(cb: CallbackQuery):
             await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_payment_choose())
             return await cb.answer()
 
+    if not is_yookassa_configured():
+        logging.info("pay: yookassa configured=0")
+        await show_screen(cb.message.chat.id, uid, payment_unavailable_text(), kb_payment_unavailable())
+        return await cb.answer()
+
     amount = MONTH_PRICE_RUB if plan_short == "month" else YEAR_PRICE_RUB
     logging.info("pay: yookassa create start tg_id=%s plan=%s amount=%s", uid, plan_short, amount)
     payment_id, confirmation_url, idempotence_key = await create_yookassa_payment(uid, resolved, plan_short, amount)
     if not payment_id or not confirmation_url:
-        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось создать оплату. Попробуйте позже.", kb_payment_choose())
+        await show_screen(cb.message.chat.id, uid, payment_service_down_text(), kb_payment_unavailable())
         return await cb.answer()
 
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
