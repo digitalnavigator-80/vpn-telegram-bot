@@ -34,16 +34,21 @@ TEST_MODE_RAW = (os.getenv("TEST_MODE") or "1").strip()
 TEST_MODE_ENABLED = TEST_MODE_RAW != "0"
 DEFAULT_INBOUND_TAG = (os.getenv("DEFAULT_INBOUND_TAG") or "VLESS TCP REALITY").strip()
 
+TRIAL_DAYS = int((os.getenv("TRIAL_DAYS") or "7").strip())
+TRIAL_DATA_LIMIT_GB = int((os.getenv("TRIAL_DATA_LIMIT_GB") or "5").strip())
+MONTH_DAYS = int((os.getenv("MONTH_DAYS") or "30").strip())
+YEAR_DAYS = int((os.getenv("YEAR_DAYS") or "365").strip())
+
 MONTH_PRICE_RUB = 150
 YEAR_DISCOUNT = 0.15
 YEAR_PRICE_RUB = int(round(MONTH_PRICE_RUB * 12 * (1 - YEAR_DISCOUNT)))
 PLANS = {
-    "trial_7d": {"days": 7, "price": 0, "title": "Trial — 7 дней"},
-    "month_30d": {"days": 30, "price": MONTH_PRICE_RUB, "title": "1 месяц"},
-    "year_365d": {"days": 365, "price": YEAR_PRICE_RUB, "title": "1 год"},
+    "trial_7d": {"days": TRIAL_DAYS, "price": 0, "title": "Trial — 7 дней"},
+    "month_30d": {"days": MONTH_DAYS, "price": MONTH_PRICE_RUB, "title": "1 месяц"},
+    "year_365d": {"days": YEAR_DAYS, "price": YEAR_PRICE_RUB, "title": "1 год"},
 }
 
-DATA_DIR = "/opt/marzban-tg-bot/data"
+DATA_DIR = "data"
 ALLOWED_PATH = f"{DATA_DIR}/allowed.json"
 PENDING_PATH = f"{DATA_DIR}/pending.json"
 USER_MAP_PATH = f"{DATA_DIR}/user_map.json"
@@ -76,38 +81,38 @@ def _ensure_data_dir() -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
 
 
-def _read_json_list(path: str) -> list:
+def load_json(path: str, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
+            return json.load(f)
     except Exception:
-        return []
+        return default
+
+
+def save_json(path: str, data) -> None:
+    _ensure_data_dir()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _read_json_list(path: str) -> list:
+    data = load_json(path, [])
+    return data if isinstance(data, list) else []
 
 
 def _write_json_list(path: str, data: list) -> None:
-    _ensure_data_dir()
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    save_json(path, data)
 
 
 def _read_json_map(path: str) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    data = load_json(path, {})
+    return data if isinstance(data, dict) else {}
 
 
 def _write_json_map(path: str, data: dict) -> None:
-    _ensure_data_dir()
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    save_json(path, data)
 
 
 def is_admin(user_id: int) -> bool:
@@ -212,15 +217,15 @@ def _get_user_mapping(tg_id: int) -> str | None:
     return data.get(str(tg_id))
 
 
-def _trial_used(tg_id: int) -> bool:
-    data = _read_json_map(TRIAL_USED_PATH)
+def is_trial_used(tg_id: int) -> bool:
+    data = load_json(TRIAL_USED_PATH, {})
     return bool(data.get(str(tg_id)))
 
 
-def _mark_trial_used(tg_id: int) -> None:
-    data = _read_json_map(TRIAL_USED_PATH)
+def mark_trial_used(tg_id: int) -> None:
+    data = load_json(TRIAL_USED_PATH, {})
     data[str(tg_id)] = True
-    _write_json_map(TRIAL_USED_PATH, data)
+    save_json(TRIAL_USED_PATH, data)
 
 
 def reply_menu_kb() -> ReplyKeyboardMarkup:
@@ -479,6 +484,37 @@ def _expire_to_api(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def parse_expire_from_user_json(expire_raw) -> datetime | None:
+    if expire_raw in (None, "null"):
+        return None
+    if isinstance(expire_raw, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(expire_raw), tz=timezone.utc)
+        except Exception:
+            return None
+    if isinstance(expire_raw, str):
+        try:
+            val = expire_raw.replace("Z", "+00:00")
+            return datetime.fromisoformat(val)
+        except Exception:
+            return None
+    return None
+
+
+def format_expire_for_api(dt: datetime) -> str:
+    return _expire_to_api(dt)
+
+
+def compute_expire(now_utc: datetime, current_expire: datetime | None, add_days: int) -> tuple[datetime, str]:
+    if current_expire and current_expire > now_utc:
+        base = current_expire
+        base_label = "extend"
+    else:
+        base = now_utc
+        base_label = "now"
+    return base + timedelta(days=add_days), base_label
+
+
 def format_subscription(user_json: dict, usage_json: dict | None) -> str:
     username = user_json.get("username") or "—"
 
@@ -602,6 +638,15 @@ def kb_tariffs():
 def kb_subscription_actions():
     kb = InlineKeyboardBuilder()
     kb.button(text="🔁 Продлить / сменить план", callback_data="menu_tariffs")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_trial_used():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📅 1 месяц", callback_data="plan:month_30d")
+    kb.button(text=f"💎 1 год — {YEAR_PRICE_RUB}₽ (-15%)", callback_data="plan:year_365d")
+    kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -991,12 +1036,12 @@ async def plan_apply(cb: CallbackQuery):
         await show_screen(cb.message.chat.id, uid, "⚠️ Неизвестный тариф.", kb_tariffs())
         return await cb.answer()
 
-    if plan_id == "trial_7d" and _trial_used(uid):
+    if plan_id == "trial_7d" and is_trial_used(uid):
         await show_screen(
             cb.message.chat.id,
             uid,
-            "⛔ Trial уже использован. Выберите месяц или год.",
-            kb_tariffs(),
+            "🎁 Trial уже использован",
+            kb_trial_used(),
         )
         return await cb.answer()
 
@@ -1023,38 +1068,61 @@ async def plan_apply(cb: CallbackQuery):
             await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_tariffs())
             return await cb.answer()
 
-    now = datetime.now(timezone.utc)
-    expire_dt = now + timedelta(days=plan["days"])
-    expire_api = _expire_to_api(expire_dt)
-
-    note_base = ""
     code_u, text_u = await api_get_user(resolved)
-    if code_u == 200:
-        data_u = _parse_json(text_u)
-        if isinstance(data_u, dict):
-            note_base = (data_u.get("note") or "").strip()
-    else:
-        logging.warning("plan: tg_id=%s username=%s code=%s", uid, resolved, code_u)
+    if code_u != 200:
+        logging.warning("plan: tg_id=%s username=%s code=%s body=%s", uid, resolved, code_u, text_u[:200])
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные пользователя. Попробуйте позже.", kb_tariffs())
+        return await cb.answer()
+    data_u = _parse_json(text_u)
+    if not isinstance(data_u, dict):
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить данные пользователя. Попробуйте позже.", kb_tariffs())
+        return await cb.answer()
 
+    now = datetime.now(timezone.utc)
+    current_expire = parse_expire_from_user_json(data_u.get("expire"))
+    expire_dt, base_label = compute_expire(now, current_expire, plan["days"])
+    expire_api = format_expire_for_api(expire_dt)
+
+    note_base = (data_u.get("note") or "").strip()
     set_at = now.strftime("%Y-%m-%d %H:%M UTC")
-    note_add = f"plan={plan_id} paid={plan['price']} set_at={set_at}"
+    note_add = f"plan={plan_id} price={plan['price']} set_at={set_at}"
     note = f"{note_base} | {note_add}".strip(" |") if note_base else note_add
 
-    code, text = await api_put_user(resolved, {"expire": expire_api, "note": note})
+    payload = {"expire": expire_api, "note": note}
+    trial_limit_bytes = TRIAL_DATA_LIMIT_GB * 1024**3
+    if plan_id == "trial_7d":
+        payload["data_limit"] = trial_limit_bytes
+        payload["data_limit_reset_strategy"] = "no_reset"
+    else:
+        payload["data_limit"] = None
+        payload["data_limit_reset_strategy"] = "no_reset"
+
+    logging.info(
+        "plan: tg_id=%s username=%s plan=%s base=%s new_expire=%s data_limit=%s",
+        uid,
+        resolved,
+        plan_id,
+        base_label,
+        expire_api,
+        payload.get("data_limit"),
+    )
+
+    code, text = await api_put_user(resolved, payload)
     if code not in (200, 204):
-        logging.warning("plan: tg_id=%s username=%s code=%s text=%s", uid, resolved, code, text[:200])
+        logging.warning("plan: tg_id=%s username=%s code=%s body=%s", uid, resolved, code, text[:200])
         await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось применить тариф. Попробуйте позже.", kb_tariffs())
         return await cb.answer()
 
     if plan_id == "trial_7d":
-        _mark_trial_used(uid)
+        mark_trial_used(uid)
 
     human_title = plan["title"]
     until_txt = expire_dt.strftime("%d.%m.%Y")
+    success_title = "🔁 Подписка продлена" if base_label == "extend" else "✅ План активирован"
     await show_screen(
         cb.message.chat.id,
         uid,
-        f"✅ План активирован: {human_title}\n⏳ Действует до: {until_txt}",
+        f"{success_title}: {human_title}\n⏳ Действует до: {until_txt}",
         kb_submenu(),
     )
     await cb.answer()
