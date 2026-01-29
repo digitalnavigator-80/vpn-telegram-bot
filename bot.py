@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BotCommand
+from requests.auth import HTTPBasicAuth
+from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ----------------- settings -----------------
@@ -35,8 +37,14 @@ TEST_MODE_ENABLED = TEST_MODE_RAW != "0"
 DEFAULT_INBOUND_TAG = (os.getenv("DEFAULT_INBOUND_TAG") or "VLESS TCP REALITY").strip()
 PLANS_UNLIMITED_RAW = (os.getenv("PLANS_UNLIMITED") or "1").strip()
 PLANS_UNLIMITED_ENABLED = PLANS_UNLIMITED_RAW != "0"
-PAYMENT_TEST_MODE_RAW = (os.getenv("PAYMENT_TEST_MODE") or "1").strip()
+PAYMENT_TEST_MODE_RAW = (os.getenv("PAYMENT_TEST_MODE") or "0").strip()
 PAYMENT_TEST_MODE_ENABLED = PAYMENT_TEST_MODE_RAW != "0"
+YOOKASSA_SHOP_ID = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
+YOOKASSA_SECRET_KEY = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
+PAYMENT_RETURN_URL = (os.getenv("PAYMENT_RETURN_URL") or "").strip()
+YOOKASSA_WEBHOOK_SECRET = (os.getenv("YOOKASSA_WEBHOOK_SECRET") or "").strip()
+YOOKASSA_WEBHOOK_HOST = (os.getenv("YOOKASSA_WEBHOOK_HOST") or "0.0.0.0").strip()
+YOOKASSA_WEBHOOK_PORT = int((os.getenv("YOOKASSA_WEBHOOK_PORT") or "8080").strip())
 
 TRIAL_DAYS = int((os.getenv("TRIAL_DAYS") or "7").strip())
 TRIAL_DATA_LIMIT_GB = int((os.getenv("TRIAL_DATA_LIMIT_GB") or "5").strip())
@@ -251,6 +259,22 @@ def save_payment_request(request_id: str, payload: dict) -> None:
     save_json(PAYMENT_REQUESTS_PATH, data)
 
 
+def get_payment_request(payment_id: str) -> dict | None:
+    data = load_json(PAYMENT_REQUESTS_PATH, {})
+    item = data.get(payment_id)
+    return item if isinstance(item, dict) else None
+
+
+def update_payment_request(payment_id: str, updates: dict) -> None:
+    data = load_json(PAYMENT_REQUESTS_PATH, {})
+    item = data.get(payment_id) or {}
+    if not isinstance(item, dict):
+        item = {}
+    item.update(updates)
+    data[payment_id] = item
+    save_json(PAYMENT_REQUESTS_PATH, data)
+
+
 def reply_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="🏠 Меню")]],
@@ -362,17 +386,71 @@ def payment_screen_text(plan_id: str) -> str:
         return (
             "💳 Оплата тарифа: 1 год\n"
             f"Сумма: {YEAR_PRICE_RUB} ₽ (-15%)\n\n"
-            "Способы оплаты скоро появятся.\n"
+            "Нажмите «Перейти к оплате».\n"
+            "После оплаты бот активирует тариф автоматически.\n\n"
             "Сейчас доступен Trial (безлимит, бессрочно)."
         )
     return (
         "💳 Оплата тарифа: 1 месяц\n"
         f"Сумма: {MONTH_PRICE_RUB} ₽\n\n"
-        "Способы оплаты скоро появятся.\n"
+        "Нажмите «Перейти к оплате».\n"
+        "После оплаты бот активирует тариф автоматически.\n\n"
         "Сейчас доступен Trial (безлимит, бессрочно)."
     )
 
 
+async def activate_paid_plan(payment_id: str, status: str, source: str):
+    item = get_payment_request(payment_id)
+    if not item:
+        logging.warning("pay: missing payment_id=%s source=%s", payment_id, source)
+        return
+    plan_short = item.get("plan")
+    tg_id = item.get("tg_id")
+    username = item.get("username")
+    if status == "succeeded":
+        update_payment_request(payment_id, {"status": "succeeded"})
+        set_selected_plan(int(tg_id), "month_30d" if plan_short == "month" else "year_365d")
+        if PLANS_UNLIMITED_ENABLED and username:
+            code_u, text_u = await api_get_user(username)
+            if code_u == 200:
+                data_u = _parse_json(text_u)
+                if isinstance(data_u, dict):
+                    note_base = (data_u.get("note") or "").strip()
+                    note_add = f"plan={plan_short} payment_id={payment_id}"
+                    note = f"{note_base} | {note_add}".strip(" |") if note_base else note_add
+                    await api_put_user(username, {"note": note})
+    else:
+        update_payment_request(payment_id, {"status": status})
+
+
+async def yookassa_webhook(request: web.Request):
+    secret = request.headers.get("X-Webhook-Secret", "")
+    if not YOOKASSA_WEBHOOK_SECRET or secret != YOOKASSA_WEBHOOK_SECRET:
+        return web.Response(status=401, text="unauthorized")
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.Response(status=400, text="bad json")
+    obj = payload.get("object") or {}
+    payment_id = obj.get("id")
+    status = obj.get("status")
+    if not payment_id or not status:
+        return web.Response(status=400, text="bad payload")
+    logging.info("webhook: yookassa payment_id=%s status=%s", payment_id, status)
+    if status == "succeeded":
+        await activate_paid_plan(payment_id, status, "webhook")
+    else:
+        update_payment_request(payment_id, {"status": status})
+    return web.Response(status=200, text="ok")
+
+
+async def start_webhook_server():
+    app = web.Application()
+    app.router.add_post("/yookassa/webhook", yookassa_webhook)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, YOOKASSA_WEBHOOK_HOST, YOOKASSA_WEBHOOK_PORT)
+    await site.start()
 async def handle_subscription(tg_user, chat_id: int):
     uid = tg_user.id
     if not is_allowed(uid):
@@ -474,6 +552,72 @@ async def api_find_user_by_username(username: str):
         doseq=True,
     )
     return await api_get(f"/api/users?{query}")
+
+
+async def create_yookassa_payment(tg_id: int, username: str, plan_short: str, amount_rub: int):
+    if not (YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and PAYMENT_RETURN_URL):
+        return None, None, None
+    payload = {
+        "amount": {"value": f"{amount_rub:.2f}", "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": PAYMENT_RETURN_URL},
+        "capture": True,
+        "description": f"VPN plan={plan_short} tg_id={tg_id}",
+    }
+    idempotence_key = uuid.uuid4().hex
+
+    def _do():
+        try:
+            r = requests.post(
+                "https://api.yookassa.ru/v3/payments",
+                json=payload,
+                headers={
+                    "Idempotence-Key": idempotence_key,
+                    "Content-Type": "application/json",
+                },
+                auth=HTTPBasicAuth(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
+                timeout=20,
+            )
+            return r.status_code, r.text
+        except Exception as exc:
+            logging.warning("yookassa create failed: %s", exc)
+            return 0, str(exc)
+
+    code, text = await asyncio.to_thread(_do)
+    if code not in (200, 201):
+        logging.warning("yookassa create error: code=%s body=%s", code, text[:200])
+        return None, None, None
+    data = _parse_json(text)
+    if not isinstance(data, dict):
+        return None, None, None
+    payment_id = data.get("id")
+    confirmation_url = (data.get("confirmation") or {}).get("confirmation_url")
+    return payment_id, confirmation_url, idempotence_key
+
+
+async def get_yookassa_payment(payment_id: str):
+    if not (YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY):
+        return None, None
+
+    def _do():
+        try:
+            r = requests.get(
+                f"https://api.yookassa.ru/v3/payments/{payment_id}",
+                auth=HTTPBasicAuth(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
+                timeout=20,
+            )
+            return r.status_code, r.text
+        except Exception as exc:
+            logging.warning("yookassa status failed: %s", exc)
+            return 0, str(exc)
+
+    code, text = await asyncio.to_thread(_do)
+    if code != 200:
+        logging.warning("yookassa status error: payment_id=%s code=%s body=%s", payment_id, code, text[:200])
+        return None, None
+    data = _parse_json(text)
+    if not isinstance(data, dict):
+        return None, None
+    return data.get("status"), data
 
 
 def _parse_json(text: str) -> dict | list | None:
@@ -657,7 +801,6 @@ def kb_main():
     kb = InlineKeyboardBuilder()
     kb.button(text="📎 Моя подписка", callback_data="menu_sub")
     kb.button(text="💳 Тарифы", callback_data="menu_tariffs")
-    kb.button(text="💳 Оплата", callback_data="pay:open")
     kb.button(text="🚀 Как подключиться", callback_data="menu_connect")
     kb.button(text="📊 Статус", callback_data="status")
     kb.button(text="🆘 Помощь", callback_data="help")
@@ -730,7 +873,8 @@ def kb_trial_only():
 
 def kb_payment(plan_id: str):
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Я оплатил (тест)", callback_data=f"pay:confirm_test:{plan_id}")
+    if PAYMENT_TEST_MODE_ENABLED:
+        kb.button(text="✅ Я оплатил (тест)", callback_data=f"pay:confirm_test:{plan_id}")
     kb.button(text="🎁 Trial", callback_data="plan:trial_7d")
     kb.button(text="⬅️ Назад", callback_data="pay:open")
     kb.button(text="🏠 Меню", callback_data="back_main")
@@ -743,6 +887,18 @@ def kb_payment_choose():
     kb.button(text="📅 1 месяц", callback_data="pay:choose:month")
     kb.button(text="💎 1 год", callback_data="pay:choose:year")
     kb.button(text="🏠 Меню", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_payment_checkout(confirmation_url: str, payment_id: str, plan_short: str):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔗 Перейти к оплате", url=confirmation_url)
+    kb.button(text="🔄 Проверить оплату", callback_data=f"pay:check:{payment_id}")
+    kb.button(text="⬅️ Назад к тарифам", callback_data="menu_tariffs")
+    kb.button(text="🏠 Меню", callback_data="back_main")
+    if PAYMENT_TEST_MODE_ENABLED:
+        kb.button(text="✅ Я оплатил (тест)", callback_data=f"pay:confirm_test:{plan_short}")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -1140,7 +1296,52 @@ async def pay_choose(cb: CallbackQuery):
         await show_screen(cb.message.chat.id, uid, "⚠️ Неизвестный тариф.", kb_payment_choose())
         return await cb.answer()
     logging.info("pay: show plan tg_id=%s plan=%s", uid, plan_short)
-    await show_screen(cb.message.chat.id, uid, payment_screen_text(plan_short), kb_payment(plan_short))
+    resolved = await resolve_marzban_username(uid, cb.from_user.username)
+    if not resolved:
+        created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
+        if err == "auth":
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_payment_choose())
+            return await cb.answer()
+        if err == "not_found":
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_payment_choose())
+            return await cb.answer()
+        if err == "validation":
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя (валидация). Сообщите администратору.", kb_payment_choose())
+            return await cb.answer()
+        if err and err.startswith("http_"):
+            await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка создания пользователя в Marzban. Сообщите администратору.", kb_payment_choose())
+            return await cb.answer()
+        if not resolved:
+            await show_screen(cb.message.chat.id, uid, "❌ Аккаунт не найден. Нажмите «Получить VPN» или обратитесь в поддержку.", kb_payment_choose())
+            return await cb.answer()
+
+    amount = MONTH_PRICE_RUB if plan_short == "month" else YEAR_PRICE_RUB
+    payment_id, confirmation_url, idempotence_key = await create_yookassa_payment(uid, resolved, plan_short, amount)
+    if not payment_id or not confirmation_url:
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось создать оплату. Попробуйте позже.", kb_payment_choose())
+        return await cb.answer()
+
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    save_payment_request(
+        payment_id,
+        {
+            "payment_id": payment_id,
+            "tg_id": uid,
+            "username": resolved,
+            "plan": plan_short,
+            "amount_rub": amount,
+            "status": "pending",
+            "idempotence_key": idempotence_key,
+            "created_at": created_at,
+        },
+    )
+    logging.info("pay: yookassa create tg_id=%s plan=%s amount=%s payment_id=%s", uid, plan_short, amount, payment_id)
+    await show_screen(
+        cb.message.chat.id,
+        uid,
+        payment_screen_text(plan_short),
+        kb_payment_checkout(confirmation_url, payment_id, plan_short),
+    )
     await cb.answer()
 
 
@@ -1174,6 +1375,7 @@ async def pay_test(cb: CallbackQuery):
     save_payment_request(
         request_id,
         {
+            "payment_id": request_id,
             "tg_id": uid,
             "username": None,
             "plan": plan_short,
@@ -1192,6 +1394,41 @@ async def pay_test(cb: CallbackQuery):
         f"✅ Оплата подтверждена (тест)\nТариф активирован: {human_title}\n∞ Безлимит\n⏳ Без срока действия",
         kb_plan_selected(),
     )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("pay:check:"))
+async def pay_check(cb: CallbackQuery):
+    uid = cb.from_user.id
+    if not is_allowed(uid):
+        await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
+        return await cb.answer()
+    payment_id = cb.data.split(":", 2)[2]
+    status, _ = await get_yookassa_payment(payment_id)
+    if not status:
+        await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось проверить оплату. Попробуйте позже.", kb_payment_choose())
+        return await cb.answer()
+
+    logging.info("pay: yookassa status payment_id=%s status=%s", payment_id, status)
+    if status == "succeeded":
+        await activate_paid_plan(payment_id, status, "check")
+        item = get_payment_request(payment_id) or {}
+        plan_short = item.get("plan")
+        human_title = "1 месяц" if plan_short == "month" else "1 год"
+        await show_screen(
+            cb.message.chat.id,
+            uid,
+            f"✅ Оплата подтверждена\nТариф активирован: {human_title}\n∞ Безлимит\n⏳ Без срока действия",
+            kb_plan_selected(),
+        )
+        return await cb.answer()
+    if status == "pending":
+        await show_screen(cb.message.chat.id, uid, "⏳ Платёж ожидает подтверждения", kb_payment_choose())
+        return await cb.answer()
+    if status == "canceled":
+        await show_screen(cb.message.chat.id, uid, "❌ Платёж отменён", kb_payment_choose())
+        return await cb.answer()
+    await show_screen(cb.message.chat.id, uid, f"ℹ️ Статус оплаты: {status}", kb_payment_choose())
     await cb.answer()
 
 
@@ -1513,6 +1750,7 @@ async def main():
         BotCommand(command="getvpn", description="🔑 Получить VPN"),
         BotCommand(command="help", description="ℹ️ Помощь"),
     ])
+    await start_webhook_server()
     await dp.start_polling(bot)
 
 
