@@ -387,14 +387,14 @@ def payment_screen_text(plan_id: str) -> str:
             "💳 Оплата тарифа: 1 год\n"
             f"Сумма: {YEAR_PRICE_RUB} ₽ (-15%)\n\n"
             "Нажмите «Перейти к оплате».\n"
-            "После оплаты бот активирует тариф автоматически.\n\n"
+            "После оплаты нажмите «Проверить оплату».\n\n"
             "Сейчас доступен Trial (безлимит, бессрочно)."
         )
     return (
         "💳 Оплата тарифа: 1 месяц\n"
         f"Сумма: {MONTH_PRICE_RUB} ₽\n\n"
         "Нажмите «Перейти к оплате».\n"
-        "После оплаты бот активирует тариф автоматически.\n\n"
+        "После оплаты нажмите «Проверить оплату».\n\n"
         "Сейчас доступен Trial (безлимит, бессрочно)."
     )
 
@@ -556,6 +556,7 @@ async def api_find_user_by_username(username: str):
 
 async def create_yookassa_payment(tg_id: int, username: str, plan_short: str, amount_rub: int):
     if not (YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and PAYMENT_RETURN_URL):
+        logging.warning("pay: yookassa create failed code=missing_config body=shop_id/secret/return_url")
         return None, None, None
     payload = {
         "amount": {"value": f"{amount_rub:.2f}", "currency": "RUB"},
@@ -584,7 +585,7 @@ async def create_yookassa_payment(tg_id: int, username: str, plan_short: str, am
 
     code, text = await asyncio.to_thread(_do)
     if code not in (200, 201):
-        logging.warning("yookassa create error: code=%s body=%s", code, text[:200])
+        logging.warning("pay: yookassa create failed code=%s body=%s", code, text[:200])
         return None, None, None
     data = _parse_json(text)
     if not isinstance(data, dict):
@@ -876,7 +877,7 @@ def kb_payment(plan_id: str):
     if PAYMENT_TEST_MODE_ENABLED:
         kb.button(text="✅ Я оплатил (тест)", callback_data=f"pay:confirm_test:{plan_id}")
     kb.button(text="🎁 Trial", callback_data="plan:trial_7d")
-    kb.button(text="⬅️ Назад", callback_data="pay:open")
+    kb.button(text="⬅️ Назад", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -1275,16 +1276,6 @@ async def menu_tariffs(cb: CallbackQuery):
     await cb.answer()
 
 
-@dp.callback_query(F.data == "pay:open")
-async def pay_open(cb: CallbackQuery):
-    if not is_allowed(cb.from_user.id):
-        await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
-        return await cb.answer()
-    logging.info("pay: open tg_id=%s", cb.from_user.id)
-    await show_screen(cb.message.chat.id, cb.from_user.id, "💳 Оплата: выберите тариф", kb_payment_choose())
-    await cb.answer()
-
-
 @dp.callback_query(F.data.startswith("pay:choose:"))
 async def pay_choose(cb: CallbackQuery):
     uid = cb.from_user.id
@@ -1316,6 +1307,7 @@ async def pay_choose(cb: CallbackQuery):
             return await cb.answer()
 
     amount = MONTH_PRICE_RUB if plan_short == "month" else YEAR_PRICE_RUB
+    logging.info("pay: yookassa create start tg_id=%s plan=%s amount=%s", uid, plan_short, amount)
     payment_id, confirmation_url, idempotence_key = await create_yookassa_payment(uid, resolved, plan_short, amount)
     if not payment_id or not confirmation_url:
         await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось создать оплату. Попробуйте позже.", kb_payment_choose())
@@ -1335,7 +1327,7 @@ async def pay_choose(cb: CallbackQuery):
             "created_at": created_at,
         },
     )
-    logging.info("pay: yookassa create tg_id=%s plan=%s amount=%s payment_id=%s", uid, plan_short, amount, payment_id)
+    logging.info("pay: yookassa create ok payment_id=%s", payment_id)
     await show_screen(
         cb.message.chat.id,
         uid,
@@ -1409,7 +1401,7 @@ async def pay_check(cb: CallbackQuery):
         await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось проверить оплату. Попробуйте позже.", kb_payment_choose())
         return await cb.answer()
 
-    logging.info("pay: yookassa status payment_id=%s status=%s", payment_id, status)
+    logging.info("pay: yookassa check payment_id=%s status=%s", payment_id, status)
     if status == "succeeded":
         await activate_paid_plan(payment_id, status, "check")
         item = get_payment_request(payment_id) or {}
