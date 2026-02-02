@@ -3,5 +3,6 @@ services:
     build: .
     container_name: vpn-telegram-bot
     restart: always
+    network_mode: host
     env_file:
       - .env
