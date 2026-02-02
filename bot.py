@@ -449,7 +449,7 @@ async def activate_paid_plan(payment_id: str, status: str, source: str):
 
 
 async def yookassa_webhook(request: web.Request):
-    secret = request.headers.get("X-Webhook-Secret", "")
+    secret = (request.headers.get("X-Webhook-Secret") or request.query.get("secret") or "").strip()
     if not YOOKASSA_WEBHOOK_SECRET or secret != YOOKASSA_WEBHOOK_SECRET:
         return web.Response(status=401, text="unauthorized")
     try:
