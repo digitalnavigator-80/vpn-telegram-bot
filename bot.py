@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BotCommand
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BotCommand, WebAppInfo
 from requests.auth import HTTPBasicAuth
 from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -928,7 +928,7 @@ def kb_payment_choose():
 
 def kb_payment_checkout(confirmation_url: str, payment_id: str, plan_short: str):
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔗 Перейти к оплате", url=confirmation_url)
+    kb.button(text="🔗 Перейти к оплате", web_app=WebAppInfo(url=confirmation_url))
     kb.button(text="🔄 Проверить оплату", callback_data=f"pay:check:{payment_id}")
     kb.button(text="⬅️ Назад к тарифам", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
