@@ -928,7 +928,7 @@ def kb_payment_choose():
 
 def kb_payment_checkout(confirmation_url: str, payment_id: str, plan_short: str):
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔗 Перейти к оплате", web_app=WebAppInfo(url=confirmation_url))
+    kb.button(text="🧩 Оплата внутри Telegram", web_app=WebAppInfo(url=confirmation_url))
     kb.button(text="🔄 Проверить оплату", callback_data=f"pay:check:{payment_id}")
     kb.button(text="⬅️ Назад к тарифам", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
