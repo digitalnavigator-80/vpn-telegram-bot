@@ -285,6 +285,51 @@ def update_payment_request(payment_id: str, updates: dict) -> None:
     save_json(PAYMENT_REQUESTS_PATH, data)
 
 
+def get_user_payment_balance_text(tg_id: int) -> str:
+    data = load_json(PAYMENT_REQUESTS_PATH, {})
+    if not isinstance(data, dict):
+        return "нет данных"
+
+    matches = []
+    has_status = False
+    for payment_id, payload in data.items():
+        if not isinstance(payload, dict):
+            continue
+        payload_tg_id = payload.get("tg_id")
+        if payload_tg_id == tg_id or payload_tg_id == str(tg_id):
+            entry = dict(payload)
+            entry.setdefault("payment_id", payment_id)
+            matches.append(entry)
+            if "status" in entry:
+                has_status = True
+
+    if not matches:
+        return "нет оплат"
+    if not has_status:
+        return "нет данных"
+
+    def _created_at_key(item: dict) -> str:
+        created_at = item.get("created_at")
+        return created_at if isinstance(created_at, str) else ""
+
+    matches.sort(key=_created_at_key)
+
+    succeeded = [item for item in matches if (item.get("status") == "succeeded")]
+    if succeeded:
+        last = succeeded[-1]
+        payment_id = last.get("payment_id") or "—"
+        return f"оплачен (последний: {payment_id})"
+
+    pending_statuses = {"pending", "waiting_for_capture", "created"}
+    pending = [item for item in matches if item.get("status") in pending_statuses]
+    if pending:
+        last = pending[-1]
+        payment_id = last.get("payment_id") or "—"
+        return f"ожидает оплату ({payment_id})"
+
+    return "нет оплат"
+
+
 def reply_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="🏠 Меню")]],
@@ -528,23 +573,36 @@ async def handle_subscription(tg_user, chat_id: int):
 
     if PLANS_UNLIMITED_ENABLED:
         plan_id = get_selected_plan(uid)
-        if plan_id in ("trial_7d", "month_30d", "year_365d"):
-            plan_title = "Trial" if plan_id == "trial_7d" else ("1 месяц" if plan_id == "month_30d" else "1 год")
-            text = (
-                f"💳 Тариф: {plan_title}\n"
-                "🧪 Тестовый режим\n"
-                "∞ Трафик: безлимит\n"
-                "⏳ Срок действия: без ограничений"
-            )
-            logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
-            await show_screen(chat_id, uid, text, kb_subscription_actions())
-            return
-        text = (
-            "ℹ️ Тариф не выбран\n"
-            "Вы можете начать с Trial 👇"
-        )
+        plan_title = None
+        if plan_id == "trial_7d":
+            plan_title = "Trial"
+        elif plan_id == "month_30d":
+            plan_title = "1 месяц"
+        elif plan_id == "year_365d":
+            plan_title = "1 год"
+
+        balance_text = get_user_payment_balance_text(uid)
+        lines = []
+        if plan_title:
+            lines.append(f"💳 Тариф: {plan_title}")
+        else:
+            lines.append("ℹ️ Тариф не выбран")
+            lines.append("Вы можете начать с Trial 👇")
+
+        if TEST_MODE_ENABLED:
+            lines.append("🧪 Тестовый режим")
+        lines.append(f"💰 Баланс: {balance_text}")
+
+        base_text = format_subscription(user_data, usage_data) if user_data else ""
+        if base_text:
+            lines.append(base_text)
+
+        text = "\n".join(lines)
         logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
-        await show_screen(chat_id, uid, text, kb_trial_only())
+        if plan_title:
+            await show_screen(chat_id, uid, text, kb_subscription_actions())
+        else:
+            await show_screen(chat_id, uid, text, kb_trial_only())
         return
 
     logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
@@ -795,9 +853,10 @@ def format_subscription(user_json: dict, usage_json: dict | None) -> str:
     if PUBLIC_BASE_URL:
         sub_path = user_json.get("subscription_url")
         if sub_path:
-            if not sub_path.endswith("/"):
-                sub_path += "/"
-            sub_url = f"{PUBLIC_BASE_URL}{sub_path}"
+            if sub_path.startswith("/"):
+                sub_url = f"{PUBLIC_BASE_URL}{sub_path}"
+            else:
+                sub_url = f"{PUBLIC_BASE_URL}/{sub_path}"
 
     updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -811,6 +870,10 @@ def format_subscription(user_json: dict, usage_json: dict | None) -> str:
     ]
     if sub_url:
         lines.append(f"🔗 Подписка: {sub_url}")
+    else:
+        links = user_json.get("links")
+        if isinstance(links, list) and links:
+            lines.append(f"🔗 Конфиг: {links[0]}")
     return "\n".join(lines)
 
 
@@ -1018,9 +1081,9 @@ async def get_subscription_link(username: str) -> str | None:
     sub_path = data.get("subscription_url")
     if not sub_path:
         return None
-    if not sub_path.endswith("/"):
-        sub_path += "/"
-    return f"{PUBLIC_BASE_URL}{sub_path}"
+    if sub_path.startswith("/"):
+        return f"{PUBLIC_BASE_URL}{sub_path}"
+    return f"{PUBLIC_BASE_URL}/{sub_path}"
 
 
 async def revoke_subscription(username: str) -> bool:
