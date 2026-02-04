@@ -16,3 +16,6 @@ data/
 
 # local backup folders
 backups/
+
+# disaster recovery snapshots
+snapshots/
