@@ -3,3 +3,12 @@ __pycache__/
 *.pyc
 .env
 data/
+
+# --- local secrets & backups (must never be committed) ---
+.env
+.env.*
+*.bak
+*.bak_*
+*.bak_before_*
+*.backup
+*backup*
