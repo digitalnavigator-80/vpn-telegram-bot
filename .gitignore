@@ -12,3 +12,6 @@ data/
 *.bak_before_*
 *.backup
 *backup*
+
+# local backup folders
+backups/
