@@ -520,6 +520,7 @@ async def ensure_reply_keyboard(chat_id: int):
 
 async def handle_getvpn(tg_user, chat_id: int):
     uid = tg_user.id
+    display_name = get_display_name(tg_user)
     if TEST_MODE_ENABLED:
         add_allowed(uid)
         created, resolved, err = await ensure_user_exists(uid, tg_user.username)
@@ -539,7 +540,7 @@ async def handle_getvpn(tg_user, chat_id: int):
         link = await get_subscription_link(resolved)
         if link:
             text = (
-                f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}\n\n"
+                f"✅ {display_name}, аккаунт {'создан' if created else 'найден'}.\n\n"
                 "✅ Доступ одобрен!\n\n"
                 "📎 Твоя ссылка подписки (вставь в Hiddify как Subscription URL):\n"
                 f"{link}\n\n"
@@ -547,7 +548,7 @@ async def handle_getvpn(tg_user, chat_id: int):
             )
         else:
             text = (
-                f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}\n\n"
+                f"✅ {display_name}, аккаунт {'создан' if created else 'найден'}.\n\n"
                 "✅ Доступ одобрен!\n\n"
                 "⚠️ Не смог сформировать ссылку подписки.\n"
                 "Попроси администратора проверить настройки."
@@ -568,8 +569,7 @@ async def handle_getvpn(tg_user, chat_id: int):
         await bot.send_message(
             ADMIN_TG_ID,
             "📋 Новая заявка на доступ:\n"
-            f"• {short_name(tg_user)}\n"
-            f"• id: {uid}",
+            f"• {short_name(tg_user)}",
             reply_markup=kb_admin_request(uid),
         )
 
@@ -790,6 +790,7 @@ async def start_webhook_server():
     await site.start()
 async def handle_subscription(tg_user, chat_id: int):
     uid = tg_user.id
+    display_name = get_display_name(tg_user)
     if not is_allowed(uid):
         await show_screen(chat_id, uid, "Сначала получи доступ 👇", kb_guest())
         return
@@ -815,7 +816,7 @@ async def handle_subscription(tg_user, chat_id: int):
         await show_screen(
             chat_id,
             uid,
-            f"✅ Аккаунт {'создан' if created else 'найден'}: {resolved}",
+            f"✅ {display_name}, аккаунт {'создан' if created else 'найден'}.",
             kb_submenu(),
         )
 
@@ -860,7 +861,7 @@ async def handle_subscription(tg_user, chat_id: int):
             lines.append("🧪 Тестовый режим")
         lines.append(f"💰 Баланс: {balance_text}")
 
-        base_text = format_subscription(user_data, usage_data) if user_data else ""
+        base_text = format_subscription(user_data, usage_data, display_name=display_name) if user_data else ""
         if base_text:
             lines.append(base_text)
 
@@ -873,7 +874,12 @@ async def handle_subscription(tg_user, chat_id: int):
         return
 
     logging.info("subscription: tg_id=%s username=%s ok", uid, resolved)
-    await show_screen(chat_id, uid, format_subscription(user_data, usage_data), kb_subscription_actions())
+    await show_screen(
+        chat_id,
+        uid,
+        format_subscription(user_data, usage_data, display_name=display_name),
+        kb_subscription_actions(),
+    )
 
 
 async def api_get_user(username: str):
@@ -1070,8 +1076,7 @@ def compute_expire(now_utc: datetime, current_expire: datetime | None, add_days:
     return base + timedelta(days=add_days), base_label
 
 
-def format_subscription(user_json: dict, usage_json: dict | None) -> str:
-    username = user_json.get("username") or "—"
+def format_subscription(user_json: dict, usage_json: dict | None, display_name: str | None = None) -> str:
 
     status_val = (user_json.get("status") or "").lower()
     status_map = {
@@ -1128,7 +1133,7 @@ def format_subscription(user_json: dict, usage_json: dict | None) -> str:
     updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     lines = [
-        f"👤 Пользователь: {username}",
+        f"👤 Пользователь: {display_name or 'вы'}",
         f"📡 Inbound: {inbound_line}",
         f"{status_emoji} Статус: {status_txt}",
         f"⏳ До: {expire_txt}",
@@ -1530,15 +1535,44 @@ async def resolve_marzban_username(tg_id: int, tg_username: str | None) -> str |
 
 
 def short_name(u) -> str:
-    if u.username:
-        return f"@{u.username}"
-    return u.full_name or "без имени"
+    return get_display_name(u)
+
+
+def get_display_name(user) -> str:
+    first_name = (getattr(user, "first_name", "") or "").strip()
+    if first_name:
+        return first_name
+
+    username = (getattr(user, "username", "") or "").strip().lstrip("@")
+    if username:
+        return f"@{username}"
+
+    return "друг"
+
+
+def escape_markdown(text: str) -> str:
+    escaped = str(text)
+    for ch in ("_", "*", "[", "]", "(", ")"):
+        escaped = escaped.replace(ch, f"\\{ch}")
+    escaped = escaped.replace("`", "\\`")
+    return escaped
 
 
 # ----------------- handlers -----------------
 @dp.message(CommandStart())
 async def start(message: Message):
     uid = message.from_user.id
+    display_name = get_display_name(message.from_user)
+    greeting = (
+        f"👋 Привет, {display_name}! Добро пожаловать в {PROFILE_NAME}.\n\n"
+        f"{PROFILE_NAME} — это VPN, который стабильно работает в России.\n\n"
+        "🎁 7 дней бесплатно — без оплаты и привязки карты\n"
+        "⏱ Подключение — 2 минуты\n"
+        "📱 iPhone, Android, Windows, Mac\n"
+        "💬 Поддержка — прямо здесь, в Telegram\n\n"
+        "Я проведу тебя шаг за шагом и помогу, если что-то не получится.\n\n"
+        "Начнём?"
+    )
     try:
         await bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -1548,28 +1582,14 @@ async def start(message: Message):
         await show_screen(
             message.chat.id,
             uid,
-            "👋 Привет!\n\n"
-            "open-portal — это VPN, который стабильно работает в России.\n\n"
-            "🎁 7 дней бесплатно — без оплаты и привязки карты\n"
-            "⏱ Подключение — 2 минуты\n"
-            "📱 iPhone, Android, Windows, Mac\n"
-            "💬 Поддержка — прямо здесь, в Telegram\n\n"
-            "Я проведу тебя шаг за шагом и помогу, если что-то не получится.\n\n"
-            "Начнём?",
+            greeting,
             kb_main(),
         )
     else:
         await show_screen(
             message.chat.id,
             uid,
-            "👋 Привет!\n\n"
-            "open-portal — это VPN, который стабильно работает в России.\n\n"
-            "🎁 7 дней бесплатно — без оплаты и привязки карты\n"
-            "⏱ Подключение — 2 минуты\n"
-            "📱 iPhone, Android, Windows, Mac\n"
-            "💬 Поддержка — прямо здесь, в Telegram\n\n"
-            "Я проведу тебя шаг за шагом и помогу, если что-то не получится.\n\n"
-            "Начнём?",
+            greeting,
             kb_guest(),
         )
 
@@ -1582,7 +1602,12 @@ async def cmd_menu(message: Message):
         pass
     await ensure_reply_keyboard(message.chat.id)
     if is_allowed(message.from_user.id):
-        await show_screen(message.chat.id, message.from_user.id, "Главное меню:", kb_main())
+        await show_screen(
+            message.chat.id,
+            message.from_user.id,
+            f"Главное меню, {get_display_name(message.from_user)}:",
+            kb_main(),
+        )
     else:
         await show_screen(message.chat.id, message.from_user.id, "Сначала получи доступ 👇", kb_guest())
 
@@ -1595,7 +1620,12 @@ async def cmd_tariffs(message: Message):
         pass
     await ensure_reply_keyboard(message.chat.id)
     if is_allowed(message.from_user.id):
-        await show_screen(message.chat.id, message.from_user.id, "💳 Тарифы:", kb_tariffs())
+        await show_screen(
+            message.chat.id,
+            message.from_user.id,
+            f"💳 Тарифы для {get_display_name(message.from_user)}:",
+            kb_tariffs(),
+        )
     else:
         await show_screen(message.chat.id, message.from_user.id, "Сначала получи доступ 👇", kb_guest())
 
@@ -1630,7 +1660,7 @@ async def cmd_help(message: Message):
     await show_screen(
         message.chat.id,
         message.from_user.id,
-        help_text(),
+        f"{get_display_name(message.from_user)},\n\n{help_text()}",
         kb_main() if is_allowed(message.from_user.id) else kb_guest(),
     )
 
@@ -1641,7 +1671,7 @@ async def back_main(cb: CallbackQuery):
     if not is_allowed(uid):
         await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    await show_screen(cb.message.chat.id, uid, "Главное меню:", kb_main())
+    await show_screen(cb.message.chat.id, uid, f"Главное меню, {get_display_name(cb.from_user)}:", kb_main())
     await cb.answer()
 
 
@@ -1650,7 +1680,7 @@ async def help_cb(cb: CallbackQuery):
     await show_screen(
         cb.message.chat.id,
         cb.from_user.id,
-        help_text(),
+        f"{get_display_name(cb.from_user)},\n\n{help_text()}",
         kb_main() if is_allowed(cb.from_user.id) else kb_guest(),
     )
     await cb.answer()
@@ -1694,7 +1724,7 @@ async def adm_ok(cb: CallbackQuery):
             return await cb.answer()
 
     link = await get_subscription_link(resolved)
-    await cb.message.answer(f"✅ Доступ выдан пользователю id={target_id}.")
+    await cb.message.answer("✅ Доступ выдан пользователю.")
 
     if link:
         await bot.send_message(
@@ -1728,7 +1758,7 @@ async def adm_no(cb: CallbackQuery):
         return await cb.answer("Ошибка id", show_alert=True)
 
     remove_pending(target_id)
-    await cb.message.answer(f"❌ Заявка отклонена (id={target_id}).")
+    await cb.message.answer("❌ Заявка отклонена.")
 
     try:
         await bot.send_message(target_id, "❌ Доступ не одобрен. Если это ошибка — напиши администратору.")
@@ -1744,7 +1774,12 @@ async def menu_sub(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
         await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    await show_screen(cb.message.chat.id, cb.from_user.id, "📎 Моя подписка:", kb_submenu())
+    await show_screen(
+        cb.message.chat.id,
+        cb.from_user.id,
+        f"📎 Моя подписка, {get_display_name(cb.from_user)}:",
+        kb_submenu(),
+    )
     await cb.answer()
 
 
@@ -1762,7 +1797,12 @@ async def menu_tariffs(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
         await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    await show_screen(cb.message.chat.id, cb.from_user.id, "💳 Тарифы:", kb_tariffs())
+    await show_screen(
+        cb.message.chat.id,
+        cb.from_user.id,
+        f"💳 Тарифы для {get_display_name(cb.from_user)}:",
+        kb_tariffs(),
+    )
     await cb.answer()
 
 
@@ -2034,7 +2074,7 @@ async def sub_revoke(cb: CallbackQuery):
     resolved = await resolve_marzban_username(uid, cb.from_user.username)
     if not resolved:
         await cb.message.answer(
-            "Пользователь не найден в панели. Нажмите «Получить VPN» (создадим аккаунт)."
+            f"{get_display_name(cb.from_user)}, аккаунт пока не найден в панели. Нажмите «Получить VPN» (создадим аккаунт)."
         )
         return await cb.answer()
 
@@ -2161,7 +2201,7 @@ async def status(cb: CallbackQuery):
     resolved = await resolve_marzban_username(uid, cb.from_user.username)
     if not resolved:
         await cb.message.answer(
-            "Пользователь не найден в панели. Нажмите «Получить VPN» (создадим аккаунт)."
+            f"{get_display_name(cb.from_user)}, аккаунт пока не найден в панели. Нажмите «Получить VPN» (создадим аккаунт)."
         )
         return await cb.answer()
 
@@ -2195,7 +2235,7 @@ async def status(cb: CallbackQuery):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     msg = (
         f"📊 Статус на {now}\n\n"
-        f"👤 Пользователь: `{resolved}`\n"
+        f"👤 Пользователь: *{escape_markdown(get_display_name(cb.from_user))}*\n"
         f"{status_emoji} Статус: *{status_val}*\n"
         f"⏳ Срок: *{fmt_expire(data.get('expire'))}*\n"
         f"📶 Трафик: *{traffic_txt}*\n"
@@ -2218,7 +2258,7 @@ async def fallback_text(message: Message):
             pass
         await ensure_reply_keyboard(message.chat.id)
         if is_allowed(uid):
-            await show_screen(message.chat.id, uid, "Главное меню:", kb_main())
+            await show_screen(message.chat.id, uid, f"Главное меню, {get_display_name(message.from_user)}:", kb_main())
         else:
             await show_screen(message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
         return
@@ -2234,7 +2274,7 @@ async def fallback_callback(cb: CallbackQuery):
     uid = cb.from_user.id
     await cb.answer("Эта кнопка устарела. Открой меню 👇", show_alert=True)
     if is_allowed(uid):
-        await cb.message.answer("Главное меню:", reply_markup=kb_main())
+        await cb.message.answer(f"Главное меню, {get_display_name(cb.from_user)}:", reply_markup=kb_main())
     else:
         await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
 
