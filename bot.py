@@ -1155,11 +1155,8 @@ def format_subscription(user_json: dict, usage_json: dict | None, display_name: 
 def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None, bool]:
     enc = urllib.parse.quote(sub_url, safe="")
     if client == "hiddify":
-        direct = f"hiddify://import/{sub_url}#{PROFILE_NAME}"
-        fallback = f"hiddify://install-sub?url={enc}#{PROFILE_NAME}"
-        if platform in ("windows", "macos", "linux"):
-            return fallback, True
-        return direct, False
+        profile_enc = urllib.parse.quote(PROFILE_NAME, safe="")
+        return f"hiddify://install-config/?url={enc}#{profile_enc}", False
 
     if client == "v2ray":
         if platform == "android":
