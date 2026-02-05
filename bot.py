@@ -27,7 +27,6 @@ MARZBAN_BASE_URL = (
     or os.getenv("MARZBAN_URL")
     or "https://127.0.0.1"
 ).strip().rstrip("/")
-MARZBAN_TOKEN = (os.getenv("MARZBAN_TOKEN") or "").strip()
 MARZBAN_ADMIN_USERNAME = (os.getenv("MARZBAN_ADMIN_USERNAME") or "").strip()
 MARZBAN_ADMIN_PASSWORD = (os.getenv("MARZBAN_ADMIN_PASSWORD") or "").strip()
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
@@ -72,31 +71,22 @@ PAYMENT_REQUESTS_PATH = f"{DATA_DIR}/payment_requests.json"
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN is empty in .env")
-if not MARZBAN_TOKEN and (not MARZBAN_ADMIN_USERNAME or not MARZBAN_ADMIN_PASSWORD):
-    raise SystemExit("Set MARZBAN_TOKEN or MARZBAN_ADMIN_USERNAME/MARZBAN_ADMIN_PASSWORD in .env")
+if not MARZBAN_ADMIN_USERNAME or not MARZBAN_ADMIN_PASSWORD:
+    raise SystemExit("Set MARZBAN_ADMIN_USERNAME and MARZBAN_ADMIN_PASSWORD in .env")
 if not PUBLIC_BASE_URL:
     logging.warning("PUBLIC_BASE_URL is empty in .env (subscription links may be incorrect)")
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class MarzbanClient:
-    def __init__(self, base_url: str, username: str, password: str, token_override: str = ""):
+    def __init__(self, base_url: str, username: str, password: str):
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
-        self._token = token_override or None
-        self._token_from_override = bool(token_override)
+        self._token = None
         self._session = requests.Session()
         self._session.verify = False
         self._timeout = 15
-
-    @staticmethod
-    def _mask_token(token: str | None) -> str:
-        if not token:
-            return "<empty>"
-        if len(token) <= 12:
-            return "******"
-        return f"{token[:6]}...{token[-6:]}"
 
     def _login(self) -> None:
         if not self.username or not self.password:
@@ -124,8 +114,7 @@ class MarzbanClient:
             raise RuntimeError("Marzban login payload is invalid")
 
         self._token = payload["access_token"]
-        self._token_from_override = False
-        logging.info("marzban login ok: token=%s", self._mask_token(self._token))
+        logging.info("marzban login ok")
 
     def request(self, method: str, path: str, retry_on_401: bool = True, **kwargs):
         if not self._token:
@@ -145,8 +134,6 @@ class MarzbanClient:
 
         if response.status_code == 401 and retry_on_401:
             logging.warning("marzban unauthorized: method=%s path=%s", method, path)
-            if self._token_from_override:
-                self._token_from_override = False
             self._login()
             return self.request(method, path, retry_on_401=False, headers=headers, **kwargs)
 
@@ -161,7 +148,6 @@ MARZBAN_CLIENT = MarzbanClient(
     base_url=MARZBAN_BASE_URL,
     username=MARZBAN_ADMIN_USERNAME,
     password=MARZBAN_ADMIN_PASSWORD,
-    token_override=MARZBAN_TOKEN,
 )
 
 bot = Bot(token=BOT_TOKEN)

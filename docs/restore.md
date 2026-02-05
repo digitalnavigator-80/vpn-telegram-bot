@@ -39,7 +39,6 @@
   - MARZBAN_BASE_URL
   - MARZBAN_ADMIN_USERNAME
   - MARZBAN_ADMIN_PASSWORD
-  - MARZBAN_TOKEN (опционально как override)
   - PUBLIC_BASE_URL
 - проверить, что `.env` не попадает в git
 
