@@ -741,6 +741,7 @@ async def start_webhook_server():
     app.router.add_post("/yookassa/webhook", yookassa_webhook)
     app.router.add_get("/webapp/copy-sub", copy_sub_webapp)
     app.router.add_get("/connect", connect_page_web)
+    app.router.add_get("/connect/", connect_page_web)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, YOOKASSA_WEBHOOK_HOST, YOOKASSA_WEBHOOK_PORT)
@@ -1127,7 +1128,7 @@ def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None
 
 
 def connect_page_url(platform: str, client: str, sub_url: str) -> str:
-    base = f"{CONNECT_PAGE_BASE_URL}/connect"
+    base = f"{CONNECT_PAGE_BASE_URL}/connect/"
     q = urllib.parse.urlencode({
         "client": client,
         "platform": platform,
@@ -1233,7 +1234,7 @@ def kb_connect_actions(tg_id: int, platform: str, client: str, sub_url: str):
     )
 
     if install_meta.get("alt"):
-        kb.button(text="🧩 Альтернатива (если магазин недоступен)", url=install_meta["alt"])
+        kb.button(text="🧩 Альтернатива", url=install_meta["alt"])
 
     kb.button(text="⬅️ Назад", callback_data=f"connect:clients:{platform}")
     kb.button(text="🏠 В меню", callback_data="back_main")
