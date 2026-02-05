@@ -172,25 +172,43 @@ CONNECT_CLIENTS = {
 
 INSTALL_LINKS = {
     "hiddify": {
-        "android": "https://github.com/hiddify/hiddify-app/releases",
-        "ios": "https://apps.apple.com/app/hiddify/id6596777532",
-        "windows": "https://github.com/hiddify/hiddify-app/releases",
-        "macos": "https://github.com/hiddify/hiddify-app/releases",
-        "linux": "https://github.com/hiddify/hiddify-app/releases",
+        "android": {
+            "store": "https://play.google.com/store/apps/details?id=app.hiddify.com",
+            "alt": "https://github.com/hiddify/hiddify-app/releases",
+        },
+        "ios": {
+            "store": "https://apps.apple.com/app/id6596777532",
+            "alt": "https://github.com/hiddify/hiddify-app/releases",
+        },
+        "windows": {"store": None, "alt": "https://github.com/hiddify/hiddify-app/releases"},
+        "macos": {"store": None, "alt": "https://github.com/hiddify/hiddify-app/releases"},
+        "linux": {"store": None, "alt": "https://github.com/hiddify/hiddify-app/releases"},
     },
     "v2ray": {
-        "android": "https://github.com/2dust/v2rayNG/releases",
-        "ios": "https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690",
-        "windows": "https://github.com/2dust/v2rayN/releases",
-        "macos": "https://github.com/2dust/v2rayN/releases",
-        "linux": "https://github.com/2dust/v2rayN/releases",
+        "android": {
+            "store": None,
+            "alt": "https://github.com/2dust/v2rayNG/releases",
+        },
+        "ios": {
+            "store": "https://apps.apple.com/app/id6446814690",
+            "alt": None,
+        },
+        "windows": {"store": None, "alt": "https://github.com/2dust/v2rayN/releases"},
+        "macos": {"store": None, "alt": "https://github.com/2dust/v2rayN/releases"},
+        "linux": {"store": None, "alt": "https://github.com/2dust/v2rayN/releases"},
     },
     "happ": {
-        "android": "https://play.google.com/store/apps/details?id=com.happproxy",
-        "ios": "https://apps.apple.com/us/app/happ-proxy-utility/id6504287215",
-        "windows": "https://github.com/happ-proxy/happ-desktop/releases",
-        "macos": "https://github.com/happ-proxy/happ-desktop/releases",
-        "linux": "https://github.com/happ-proxy/happ-desktop/releases",
+        "android": {
+            "store": "https://play.google.com/store/apps/details?id=com.happproxy",
+            "alt": "https://github.com/Happ-proxy/happ-desktop/releases",
+        },
+        "ios": {
+            "store": "https://apps.apple.com/app/id6504287215",
+            "alt": "https://github.com/Happ-proxy/happ-desktop/releases",
+        },
+        "windows": {"store": None, "alt": "https://github.com/Happ-proxy/happ-desktop/releases"},
+        "macos": {"store": None, "alt": "https://github.com/Happ-proxy/happ-desktop/releases"},
+        "linux": {"store": None, "alt": "https://github.com/Happ-proxy/happ-desktop/releases"},
     },
 }
 
@@ -1063,6 +1081,8 @@ def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
         f"🔌 Подключение: {platform_name} · {client_name}",
         "",
         "1) Установите приложение по кнопке ниже.",
+        "Лучше ставить из магазина — проще и безопаснее.",
+        "Если магазин недоступен в вашем регионе — используйте альтернативную ссылку.",
     ]
     if has_auto:
         lines.append("2) Нажмите «Автоподключение (1 клик)» и подтвердите импорт.")
@@ -1127,9 +1147,11 @@ def kb_connect_clients(platform: str):
 
 def kb_connect_actions(tg_id: int, platform: str, client: str, sub_url: str):
     kb = InlineKeyboardBuilder()
-    install_url = INSTALL_LINKS.get(client, {}).get(platform)
-    if install_url:
-        kb.button(text="📥 Установить приложение", url=install_url)
+    install_meta = INSTALL_LINKS.get(client, {}).get(platform, {})
+    if install_meta.get("store"):
+        kb.button(text="📥 Установить из магазина", url=install_meta["store"])
+    if install_meta.get("alt"):
+        kb.button(text="🧩 Альтернатива (если магазин недоступен)", url=install_meta["alt"])
 
     auto_url, is_fallback = build_sub_link(sub_url, platform, client)
     if auto_url:
