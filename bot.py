@@ -31,6 +31,7 @@ MARZBAN_ADMIN_USERNAME = (os.getenv("MARZBAN_ADMIN_USERNAME") or "").strip()
 MARZBAN_ADMIN_PASSWORD = (os.getenv("MARZBAN_ADMIN_PASSWORD") or "").strip()
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
 CONNECT_PAGE_BASE_URL = (os.getenv("CONNECT_PAGE_BASE_URL") or "https://open-portal.net").strip().rstrip("/")
+BOT_PUBLIC_USERNAME = (os.getenv("BOT_PUBLIC_USERNAME") or "").strip().lstrip("@")
 
 ADMIN_TG_ID_RAW = (os.getenv("ADMIN_TG_ID") or "").strip()
 ADMIN_TG_ID = int(ADMIN_TG_ID_RAW) if ADMIN_TG_ID_RAW.isdigit() else None
@@ -621,6 +622,7 @@ async def connect_page_web(request: web.Request):
     platform = (request.query.get("platform") or "").strip()
     client = (request.query.get("client") or "").strip()
     mode = (request.query.get("mode") or "").strip().lower()
+    bot_username = (request.query.get("bot") or BOT_PUBLIC_USERNAME or "").strip().lstrip("@")
 
     deep_link, _ = build_sub_link(sub_url, platform, client)
 
@@ -634,15 +636,31 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-s
 button {{ width:100%; padding:12px; border:0; border-radius:10px; color:white; font-size:16px; cursor:pointer; }}
 .primary {{ background:#2563eb; }}
 .secondary {{ background:#334155; }}
+.muted {{ font-size:14px; color:#94a3b8; }}
+.notice {{ background:#0b1220; border-radius:10px; padding:12px; margin-top:12px; }}
+.steps {{ margin:10px 0 0 0; padding-left:18px; line-height:1.5; }}
+.steps li {{ margin-bottom:8px; }}
 pre {{ white-space:pre-wrap; word-break:break-all; background:#0b1220; padding:12px; border-radius:8px; margin-top:12px; }}
 small {{ color:#94a3b8; }}
 </style></head>
 <body><div class="card">
-<h3>🔌 Подключаем вас к OpenPortal…</h3>
-<p>Сейчас мы попробуем открыть приложение автоматически.<br>Если не получилось — используйте кнопки ниже.</p>
+<h3>🔌 Открываем приложение</h3>
+<p class="muted">Мы попробуем открыть приложение. Инструкция ниже всегда доступна.</p>
+<div class="notice">
+<strong>❗ Если подключение не произошло автоматически — это нормально</strong>
+<ol class="steps">
+<li>1️⃣ Нажмите кнопку «Скопировать ссылку»</li>
+<li>2️⃣ Откройте приложение</li>
+<li>3️⃣ Нажмите кнопку «+»</li>
+<li>4️⃣ Выберите пункт «Вставить из буфера»</li>
+<li>5️⃣ Подтвердите добавление</li>
+</ol>
+<small>Это нужно сделать только один раз</small>
+</div>
 <div class="actions">
 <button id="open" class="primary">⚡ Открыть приложение</button>
 <button id="copy" class="secondary">📋 Скопировать ссылку</button>
+<button id="back" class="secondary">⬅️ Вернуться в бот</button>
 </div>
 <pre id="sub"></pre>
 <p id="status"><small></small></p>
@@ -651,18 +669,20 @@ small {{ color:#94a3b8; }}
 const schemeLink = {json.dumps(deep_link or "")};
 const subUrl = {json.dumps(sub_url)};
 const mode = {json.dumps(mode)};
+const botUsername = {json.dumps(bot_username)};
 const status = document.getElementById('status');
 const titleEl = document.querySelector('h3');
-const introEl = document.querySelector('.card > p');
 const openButton = document.getElementById('open');
 const copyButton = document.getElementById('copy');
+const backButton = document.getElementById('back');
 document.getElementById('sub').textContent = subUrl || 'Ссылка недоступна';
 
 if (mode === 'copy') {{
-  titleEl.textContent = '📋 Копирование ссылки подписки';
-  introEl.innerHTML = 'Скопируйте ссылку и вставьте её в приложение вручную.';
-  openButton.style.display = 'none';
-  status.innerHTML = '<small>✅ Ссылка скопирована. Откройте приложение и вставьте её в Subscription URL.</small>';
+  titleEl.textContent = '📋 Скопируйте ссылку';
+  copyButton.classList.remove('secondary');
+  copyButton.classList.add('primary');
+  openButton.classList.remove('primary');
+  openButton.classList.add('secondary');
 }}
 
 function openApp() {{
@@ -677,18 +697,35 @@ openButton.onclick = () => {{
 copyButton.onclick = async () => {{
   try {{
     await navigator.clipboard.writeText(subUrl);
-    status.innerHTML = mode === 'copy'
-      ? '<small>✅ Ссылка скопирована. Откройте приложение и вставьте её в Subscription URL.</small>'
-      : '<small>✅ Скопировано в буфер обмена</small>';
+    status.innerHTML = '<small>✅ Ссылка скопирована в буфер обмена<br><br>Теперь:<br>откройте приложение → нажмите «+» → выберите «Вставить из буфера»</small>';
   }} catch (e) {{
     status.innerHTML = '<small>⚠️ Не удалось скопировать автоматически. Скопируйте вручную.</small>';
   }}
 }};
 
+backButton.onclick = () => {{
+  if (botUsername) {{
+    window.location.href = `https://t.me/${{botUsername}}`;
+    return;
+  }}
+  if (window.Telegram && window.Telegram.WebApp) {{
+    window.Telegram.WebApp.close();
+    return;
+  }}
+  if (document.referrer) {{
+    window.location.href = document.referrer;
+    return;
+  }}
+  window.history.back();
+}};
+
 if (mode === 'copy') {{
-  copyButton.click();
+  status.innerHTML = '<small>Нажмите «Скопировать ссылку» и выполните шаги выше.</small>';
 }} else {{
   openApp();
+  setTimeout(() => {{
+    status.innerHTML = '<small>Если приложение не открылось, выполните шаги выше.</small>';
+  }}, 1500);
 }}
 </script></body></html>"""
     return web.Response(text=html, content_type="text/html")
@@ -1107,11 +1144,14 @@ def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None
 
 def connect_page_url(platform: str, client: str, sub_url: str) -> str:
     base = f"{CONNECT_PAGE_BASE_URL}/connect/"
-    q = urllib.parse.urlencode({
+    params = {
         "client": client,
         "platform": platform,
         "sub": sub_url,
-    })
+    }
+    if BOT_PUBLIC_USERNAME:
+        params["bot"] = BOT_PUBLIC_USERNAME
+    q = urllib.parse.urlencode(params)
     return f"{base}?{q}"
 
 
@@ -1203,7 +1243,9 @@ def kb_connect_actions(platform: str, client: str, sub_url: str):
         f"&platform={urllib.parse.quote(platform, safe='')}"
         f"&sub={enc_sub_url}"
     )
-    kb.button(text="📋 Скопировать ссылку подписки", url=copy_url)
+    if BOT_PUBLIC_USERNAME:
+        copy_url += f"&bot={urllib.parse.quote(BOT_PUBLIC_USERNAME, safe='')}"
+    kb.button(text="📋 Скопировать ссылку", url=copy_url)
 
     if install_meta.get("alt"):
         kb.button(text="🧩 Альтернатива", url=install_meta["alt"])
