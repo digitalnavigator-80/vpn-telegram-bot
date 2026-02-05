@@ -36,7 +36,10 @@
 - заполнить значения вручную:
   - BOT_TOKEN
   - YOOKASSA_*
-  - MARZBAN_TOKEN
+  - MARZBAN_BASE_URL
+  - MARZBAN_ADMIN_USERNAME
+  - MARZBAN_ADMIN_PASSWORD
+  - MARZBAN_TOKEN (опционально как override)
   - PUBLIC_BASE_URL
 - проверить, что `.env` не попадает в git
 
@@ -59,7 +62,7 @@
 
 ## 6. Частые проблемы
 - бот не стартует → проверить `.env`
-- 401 от Marzban → проверить токен
+- 401 от Marzban → проверить admin username/password (бот сам перевыпустит токен)
 - webhook не приходит → проверить URL и SSL
 
 ---

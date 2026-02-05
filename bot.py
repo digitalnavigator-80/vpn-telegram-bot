@@ -28,6 +28,8 @@ MARZBAN_BASE_URL = (
     or "https://127.0.0.1"
 ).strip().rstrip("/")
 MARZBAN_TOKEN = (os.getenv("MARZBAN_TOKEN") or "").strip()
+MARZBAN_ADMIN_USERNAME = (os.getenv("MARZBAN_ADMIN_USERNAME") or "").strip()
+MARZBAN_ADMIN_PASSWORD = (os.getenv("MARZBAN_ADMIN_PASSWORD") or "").strip()
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
 
 ADMIN_TG_ID_RAW = (os.getenv("ADMIN_TG_ID") or "").strip()
@@ -70,20 +72,97 @@ PAYMENT_REQUESTS_PATH = f"{DATA_DIR}/payment_requests.json"
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN is empty in .env")
-if not MARZBAN_TOKEN:
-    raise SystemExit("MARZBAN_TOKEN is empty in .env")
+if not MARZBAN_TOKEN and (not MARZBAN_ADMIN_USERNAME or not MARZBAN_ADMIN_PASSWORD):
+    raise SystemExit("Set MARZBAN_TOKEN or MARZBAN_ADMIN_USERNAME/MARZBAN_ADMIN_PASSWORD in .env")
 if not PUBLIC_BASE_URL:
     logging.warning("PUBLIC_BASE_URL is empty in .env (subscription links may be incorrect)")
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "Authorization": f"Bearer {MARZBAN_TOKEN}",
-    "Content-Type": "application/json",
-})
-SESSION.verify = False
-SESSION.timeout = 15
+class MarzbanClient:
+    def __init__(self, base_url: str, username: str, password: str, token_override: str = ""):
+        self.base_url = base_url.rstrip("/")
+        self.username = username
+        self.password = password
+        self._token = token_override or None
+        self._token_from_override = bool(token_override)
+        self._session = requests.Session()
+        self._session.verify = False
+        self._timeout = 15
+
+    @staticmethod
+    def _mask_token(token: str | None) -> str:
+        if not token:
+            return "<empty>"
+        if len(token) <= 12:
+            return "******"
+        return f"{token[:6]}...{token[-6:]}"
+
+    def _login(self) -> None:
+        if not self.username or not self.password:
+            raise RuntimeError("Marzban admin credentials are not set")
+
+        url = f"{self.base_url}/api/admin/token"
+        try:
+            response = self._session.post(
+                url,
+                data={"username": self.username, "password": self.password},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=self._timeout,
+            )
+        except Exception as exc:
+            logging.warning("marzban login failed: url=%s error=%s", url, exc)
+            raise
+
+        if response.status_code != 200:
+            logging.warning("marzban login failed: code=%s body=%s", response.status_code, response.text[:200])
+            raise RuntimeError("Marzban login failed")
+
+        payload = _parse_json(response.text)
+        if not isinstance(payload, dict) or not payload.get("access_token"):
+            logging.warning("marzban login failed: bad payload")
+            raise RuntimeError("Marzban login payload is invalid")
+
+        self._token = payload["access_token"]
+        self._token_from_override = False
+        logging.info("marzban login ok: token=%s", self._mask_token(self._token))
+
+    def request(self, method: str, path: str, retry_on_401: bool = True, **kwargs):
+        if not self._token:
+            self._login()
+
+        headers = dict(kwargs.pop("headers", {}) or {})
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+
+        response = self._session.request(
+            method=method,
+            url=f"{self.base_url}{path}",
+            headers=headers,
+            timeout=kwargs.pop("timeout", self._timeout),
+            **kwargs,
+        )
+
+        if response.status_code == 401 and retry_on_401:
+            logging.warning("marzban unauthorized: method=%s path=%s", method, path)
+            if self._token_from_override:
+                self._token_from_override = False
+            self._login()
+            return self.request(method, path, retry_on_401=False, headers=headers, **kwargs)
+
+        if response.status_code == 401:
+            logging.error("marzban unauthorized after relogin: method=%s path=%s", method, path)
+            raise RuntimeError("Marzban unauthorized")
+
+        return response
+
+
+MARZBAN_CLIENT = MarzbanClient(
+    base_url=MARZBAN_BASE_URL,
+    username=MARZBAN_ADMIN_USERNAME,
+    password=MARZBAN_ADMIN_PASSWORD,
+    token_override=MARZBAN_TOKEN,
+)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -209,7 +288,7 @@ async def api_get(path: str):
 
     def _do():
         try:
-            r = SESSION.get(url)
+            r = MARZBAN_CLIENT.request("GET", path)
             return r.status_code, r.text
         except Exception as exc:
             logging.warning("api_get failed: url=%s error=%s", url, exc)
@@ -223,7 +302,7 @@ async def api_post(path: str, payload: dict):
 
     def _do():
         try:
-            r = SESSION.post(url, json=payload)
+            r = MARZBAN_CLIENT.request("POST", path, json=payload, headers={"Content-Type": "application/json"})
             return r.status_code, r.text
         except Exception as exc:
             logging.warning("api_post failed: url=%s error=%s", url, exc)
@@ -237,7 +316,7 @@ async def api_put(path: str, payload: dict):
 
     def _do():
         try:
-            r = SESSION.put(url, json=payload)
+            r = MARZBAN_CLIENT.request("PUT", path, json=payload, headers={"Content-Type": "application/json"})
             return r.status_code, r.text
         except Exception as exc:
             logging.warning("api_put failed: url=%s error=%s", url, exc)
