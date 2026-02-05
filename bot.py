@@ -30,6 +30,7 @@ MARZBAN_BASE_URL = (
 MARZBAN_ADMIN_USERNAME = (os.getenv("MARZBAN_ADMIN_USERNAME") or "").strip()
 MARZBAN_ADMIN_PASSWORD = (os.getenv("MARZBAN_ADMIN_PASSWORD") or "").strip()
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+CONNECT_PAGE_BASE_URL = (os.getenv("CONNECT_PAGE_BASE_URL") or "https://open-portal.net").strip().rstrip("/")
 
 ADMIN_TG_ID_RAW = (os.getenv("ADMIN_TG_ID") or "").strip()
 ADMIN_TG_ID = int(ADMIN_TG_ID_RAW) if ADMIN_TG_ID_RAW.isdigit() else None
@@ -653,6 +654,67 @@ document.getElementById('copy').onclick = async () => {{
     return web.Response(text=html, content_type="text/html")
 
 
+
+
+async def connect_page_web(request: web.Request):
+    sub_url = (request.query.get("sub") or "").strip()
+    platform = (request.query.get("platform") or "").strip()
+    client = (request.query.get("client") or "").strip()
+
+    deep_link, _ = build_sub_link(sub_url, platform, client)
+
+    html = f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenPortal — Connect</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; padding: 16px; background:#0f172a; color:#e2e8f0; }}
+.card {{ background:#1e293b; border-radius:12px; padding:16px; }}
+.actions {{ display:grid; gap:10px; margin-top:14px; }}
+button {{ width:100%; padding:12px; border:0; border-radius:10px; color:white; font-size:16px; cursor:pointer; }}
+.primary {{ background:#2563eb; }}
+.secondary {{ background:#334155; }}
+pre {{ white-space:pre-wrap; word-break:break-all; background:#0b1220; padding:12px; border-radius:8px; margin-top:12px; }}
+small {{ color:#94a3b8; }}
+</style></head>
+<body><div class="card">
+<h3>🔌 Подключаем вас к OpenPortal…</h3>
+<p>Сейчас мы попробуем открыть приложение автоматически.<br>Если не получилось — используйте кнопки ниже.</p>
+<div class="actions">
+<button id="open" class="primary">⚡ Открыть приложение</button>
+<button id="copy" class="secondary">📋 Скопировать ссылку</button>
+</div>
+<pre id="sub"></pre>
+<p id="status"><small></small></p>
+</div>
+<script>
+const schemeLink = {json.dumps(deep_link or "")};
+const subUrl = {json.dumps(sub_url)};
+const status = document.getElementById('status');
+document.getElementById('sub').textContent = subUrl || 'Ссылка недоступна';
+
+function openApp() {{
+  if (!schemeLink) return;
+  window.location.href = schemeLink;
+}}
+
+document.getElementById('open').onclick = () => {{
+  openApp();
+}};
+
+document.getElementById('copy').onclick = async () => {{
+  try {{
+    await navigator.clipboard.writeText(subUrl);
+    status.innerHTML = '<small>✅ Скопировано в буфер обмена</small>';
+  }} catch (e) {{
+    status.innerHTML = '<small>⚠️ Не удалось скопировать автоматически. Скопируйте вручную.</small>';
+  }}
+}};
+
+openApp();
+</script></body></html>"""
+    return web.Response(text=html, content_type="text/html")
+
+
 async def yookassa_webhook(request: web.Request):
     secret = (request.headers.get("X-Webhook-Secret") or request.query.get("secret") or "").strip()
     if not YOOKASSA_WEBHOOK_SECRET or secret != YOOKASSA_WEBHOOK_SECRET:
@@ -678,6 +740,7 @@ async def start_webhook_server():
     app = web.Application()
     app.router.add_post("/yookassa/webhook", yookassa_webhook)
     app.router.add_get("/webapp/copy-sub", copy_sub_webapp)
+    app.router.add_get("/connect", connect_page_web)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, YOOKASSA_WEBHOOK_HOST, YOOKASSA_WEBHOOK_PORT)
@@ -1063,6 +1126,16 @@ def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None
     return None, False
 
 
+def connect_page_url(platform: str, client: str, sub_url: str) -> str:
+    base = f"{CONNECT_PAGE_BASE_URL}/connect"
+    q = urllib.parse.urlencode({
+        "client": client,
+        "platform": platform,
+        "sub": sub_url,
+    })
+    return f"{base}?{q}"
+
+
 def copy_webapp_url(tg_id: int, platform: str, client: str, sub_url: str) -> str:
     base = f"{PUBLIC_BASE_URL}/webapp/copy-sub"
     q = urllib.parse.urlencode({
@@ -1150,19 +1223,17 @@ def kb_connect_actions(tg_id: int, platform: str, client: str, sub_url: str):
     install_meta = INSTALL_LINKS.get(client, {}).get(platform, {})
     if install_meta.get("store"):
         kb.button(text="📥 Установить из магазина", url=install_meta["store"])
-    if install_meta.get("alt"):
-        kb.button(text="🧩 Альтернатива (если магазин недоступен)", url=install_meta["alt"])
 
-    auto_url, is_fallback = build_sub_link(sub_url, platform, client)
-    if auto_url:
-        auto_text = "⚡ Автоподключение (fallback)" if is_fallback else "⚡ Автоподключение (1 клик)"
-        kb.button(text=auto_text, url=auto_url)
+    kb.button(text="⚡ Автоподключение (1 клик)", url=connect_page_url(platform, client, sub_url))
 
     kb.button(
         text="📋 Скопировать ссылку подписки",
         web_app=WebAppInfo(url=copy_webapp_url(tg_id, platform, client, sub_url)),
     )
-    kb.button(text="🔙 Назад", callback_data=f"connect:os:{platform}")
+
+    if install_meta.get("alt"):
+        kb.button(text="🧩 Альтернатива (если магазин недоступен)", url=install_meta["alt"])
+
     kb.adjust(1)
     return kb.as_markup()
 
