@@ -214,6 +214,31 @@ INSTALL_LINKS = {
     },
 }
 
+PLATFORM_ALIASES = {
+    "iphone": "ios",
+    "ipad": "ios",
+    "win": "windows",
+    "mac": "macos",
+    "osx": "macos",
+    "gnu/linux": "linux",
+    "ubuntu": "linux",
+}
+
+CLIENT_ALIASES = {
+    "v2rayn": "v2ray",
+    "v2rayng": "v2ray",
+    "hiddify-next": "hiddify",
+    "happ proxy": "happ",
+}
+
+
+def normalize_connect_keys(platform: str, client: str) -> tuple[str, str]:
+    normalized_platform = (platform or "").strip().lower()
+    normalized_client = (client or "").strip().lower()
+    normalized_platform = PLATFORM_ALIASES.get(normalized_platform, normalized_platform)
+    normalized_client = CLIENT_ALIASES.get(normalized_client, normalized_client)
+    return normalized_platform, normalized_client
+
 # ----------------- helpers: storage -----------------
 def _ensure_data_dir() -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -1230,17 +1255,27 @@ def kb_connect_clients(platform: str):
 
 def kb_connect_actions(platform: str, client: str, sub_url: str):
     kb = InlineKeyboardBuilder()
-    install_meta = INSTALL_LINKS.get(client, {}).get(platform, {})
+    normalized_platform, normalized_client = normalize_connect_keys(platform, client)
+    install_meta = INSTALL_LINKS.get(normalized_client, {}).get(normalized_platform, {})
+    if not install_meta:
+        logging.warning(
+            "connect install links missing: platform=%s client=%s normalized_platform=%s normalized_client=%s",
+            platform,
+            client,
+            normalized_platform,
+            normalized_client,
+        )
+
     if install_meta.get("store"):
         kb.button(text="📥 Установить из магазина", url=install_meta["store"])
 
-    kb.button(text="⚡ Автоподключение (1 клик)", url=connect_page_url(platform, client, sub_url))
+    kb.button(text="⚡ Автоподключение (1 клик)", url=connect_page_url(normalized_platform, normalized_client, sub_url))
 
     enc_sub_url = urllib.parse.quote(sub_url, safe="")
     copy_url = (
         f"{CONNECT_PAGE_BASE_URL}/connect/?mode=copy"
-        f"&client={urllib.parse.quote(client, safe='')}"
-        f"&platform={urllib.parse.quote(platform, safe='')}"
+        f"&client={urllib.parse.quote(normalized_client, safe='')}"
+        f"&platform={urllib.parse.quote(normalized_platform, safe='')}"
         f"&sub={enc_sub_url}"
     )
     if BOT_PUBLIC_USERNAME:
@@ -1250,7 +1285,7 @@ def kb_connect_actions(platform: str, client: str, sub_url: str):
     if install_meta.get("alt"):
         kb.button(text="🧩 Альтернатива", url=install_meta["alt"])
 
-    kb.button(text="⬅️ Назад", callback_data=f"connect:clients:{platform}")
+    kb.button(text="⬅️ Назад", callback_data=f"connect:clients:{normalized_platform}")
     kb.button(text="🏠 В меню", callback_data="back_main")
 
     kb.adjust(1)
