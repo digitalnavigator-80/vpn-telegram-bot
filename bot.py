@@ -616,50 +616,11 @@ async def activate_paid_plan(payment_id: str, status: str, source: str):
         update_payment_request(payment_id, {"status": status})
 
 
-async def copy_sub_webapp(request: web.Request):
-    sub_url = (request.query.get("sub") or "").strip()
-    platform = (request.query.get("platform") or "").strip()
-    client = (request.query.get("client") or "").strip()
-
-    html = f"""<!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenPortal — Copy Subscription</title>
-<style>
-body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; padding: 16px; background:#0f172a; color:#e2e8f0; }}
-.card {{ background:#1e293b; border-radius:12px; padding:16px; }}
-button {{ width:100%; padding:12px; border:0; border-radius:10px; background:#2563eb; color:white; font-size:16px; }}
-pre {{ white-space:pre-wrap; word-break:break-all; background:#0b1220; padding:12px; border-radius:8px; }}
-small {{ color:#94a3b8; }}
-</style></head>
-<body><div class="card">
-<h3>Скопировать ссылку подписки</h3>
-<p><small>Клиент: {client or '—'} · Платформа: {platform or '—'}</small></p>
-<pre id="sub"></pre>
-<button id="copy">Copy</button>
-<p id="status"><small>Если кнопка не работает — скопируйте ссылку вручную.</small></p>
-</div>
-<script>
-const subUrl = {json.dumps(sub_url)};
-document.getElementById('sub').textContent = subUrl || 'Ссылка недоступна';
-document.getElementById('copy').onclick = async () => {{
-  const status = document.getElementById('status');
-  try {{
-    await navigator.clipboard.writeText(subUrl);
-    status.innerHTML = '<small>✅ Скопировано в буфер обмена</small>';
-  }} catch (e) {{
-    status.innerHTML = '<small>⚠️ Не удалось скопировать автоматически. Скопируйте вручную.</small>';
-  }}
-}};
-</script></body></html>"""
-    return web.Response(text=html, content_type="text/html")
-
-
-
-
 async def connect_page_web(request: web.Request):
     sub_url = (request.query.get("sub") or "").strip()
     platform = (request.query.get("platform") or "").strip()
     client = (request.query.get("client") or "").strip()
+    mode = (request.query.get("mode") or "").strip().lower()
 
     deep_link, _ = build_sub_link(sub_url, platform, client)
 
@@ -689,28 +650,46 @@ small {{ color:#94a3b8; }}
 <script>
 const schemeLink = {json.dumps(deep_link or "")};
 const subUrl = {json.dumps(sub_url)};
+const mode = {json.dumps(mode)};
 const status = document.getElementById('status');
+const titleEl = document.querySelector('h3');
+const introEl = document.querySelector('.card > p');
+const openButton = document.getElementById('open');
+const copyButton = document.getElementById('copy');
 document.getElementById('sub').textContent = subUrl || 'Ссылка недоступна';
+
+if (mode === 'copy') {{
+  titleEl.textContent = '📋 Копирование ссылки подписки';
+  introEl.innerHTML = 'Скопируйте ссылку и вставьте её в приложение вручную.';
+  openButton.style.display = 'none';
+  status.innerHTML = '<small>✅ Ссылка скопирована. Откройте приложение и вставьте её в Subscription URL.</small>';
+}}
 
 function openApp() {{
   if (!schemeLink) return;
   window.location.href = schemeLink;
 }}
 
-document.getElementById('open').onclick = () => {{
+openButton.onclick = () => {{
   openApp();
 }};
 
-document.getElementById('copy').onclick = async () => {{
+copyButton.onclick = async () => {{
   try {{
     await navigator.clipboard.writeText(subUrl);
-    status.innerHTML = '<small>✅ Скопировано в буфер обмена</small>';
+    status.innerHTML = mode === 'copy'
+      ? '<small>✅ Ссылка скопирована. Откройте приложение и вставьте её в Subscription URL.</small>'
+      : '<small>✅ Скопировано в буфер обмена</small>';
   }} catch (e) {{
     status.innerHTML = '<small>⚠️ Не удалось скопировать автоматически. Скопируйте вручную.</small>';
   }}
 }};
 
-openApp();
+if (mode === 'copy') {{
+  copyButton.click();
+}} else {{
+  openApp();
+}}
 </script></body></html>"""
     return web.Response(text=html, content_type="text/html")
 
@@ -739,7 +718,6 @@ async def yookassa_webhook(request: web.Request):
 async def start_webhook_server():
     app = web.Application()
     app.router.add_post("/yookassa/webhook", yookassa_webhook)
-    app.router.add_get("/webapp/copy-sub", copy_sub_webapp)
     app.router.add_get("/connect", connect_page_web)
     app.router.add_get("/connect/", connect_page_web)
     runner = web.AppRunner(app)
@@ -1137,16 +1115,6 @@ def connect_page_url(platform: str, client: str, sub_url: str) -> str:
     return f"{base}?{q}"
 
 
-def copy_webapp_url(tg_id: int, platform: str, client: str, sub_url: str) -> str:
-    base = f"{PUBLIC_BASE_URL}/webapp/copy-sub"
-    q = urllib.parse.urlencode({
-        "tg": str(tg_id),
-        "platform": platform,
-        "client": client,
-        "sub": sub_url,
-    })
-    return f"{base}?{q}"
-
 
 def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
     platform_name = CONNECT_PLATFORMS.get(platform, platform)
@@ -1162,10 +1130,10 @@ def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
         lines.append("2) Нажмите «Автоподключение (1 клик)» и подтвердите импорт.")
     else:
         lines.append("2) Автоподключение на этой платформе не гарантируется.")
-        lines.append("3) Откройте «Скопировать ссылку подписки» и импортируйте вручную.")
+        lines.append("3) Нажмите «Скопировать ссылку подписки» и импортируйте вручную.")
     lines.append("")
     lines.append("Если потерялись — нажмите «Назад».")
-    lines.append("Если не открылось — используйте ручное копирование в WebApp.")
+    lines.append("Если не открылось — используйте ручное копирование через connect-страницу.")
     return "\n".join(lines)
 
 
@@ -1220,7 +1188,7 @@ def kb_connect_clients(platform: str):
     return kb.as_markup()
 
 
-def kb_connect_actions(tg_id: int, platform: str, client: str, sub_url: str):
+def kb_connect_actions(platform: str, client: str, sub_url: str):
     kb = InlineKeyboardBuilder()
     install_meta = INSTALL_LINKS.get(client, {}).get(platform, {})
     if install_meta.get("store"):
@@ -1228,10 +1196,14 @@ def kb_connect_actions(tg_id: int, platform: str, client: str, sub_url: str):
 
     kb.button(text="⚡ Автоподключение (1 клик)", url=connect_page_url(platform, client, sub_url))
 
-    kb.button(
-        text="📋 Скопировать ссылку подписки",
-        web_app=WebAppInfo(url=copy_webapp_url(tg_id, platform, client, sub_url)),
+    enc_sub_url = urllib.parse.quote(sub_url, safe="")
+    copy_url = (
+        f"{CONNECT_PAGE_BASE_URL}/connect/?mode=copy"
+        f"&client={urllib.parse.quote(client, safe='')}"
+        f"&platform={urllib.parse.quote(platform, safe='')}"
+        f"&sub={enc_sub_url}"
     )
+    kb.button(text="📋 Скопировать ссылку подписки", url=copy_url)
 
     if install_meta.get("alt"):
         kb.button(text="🧩 Альтернатива", url=install_meta["alt"])
@@ -2094,7 +2066,7 @@ async def connect_show_actions(cb: CallbackQuery):
         cb.message.chat.id,
         uid,
         text,
-        kb_connect_actions(uid, platform, client, sub_url),
+        kb_connect_actions(platform, client, sub_url),
     )
     await cb.answer()
 
