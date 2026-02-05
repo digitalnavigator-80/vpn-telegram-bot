@@ -1163,6 +1163,7 @@ def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
         lines.append("2) Автоподключение на этой платформе не гарантируется.")
         lines.append("3) Откройте «Скопировать ссылку подписки» и импортируйте вручную.")
     lines.append("")
+    lines.append("Если потерялись — нажмите «Назад».")
     lines.append("Если не открылось — используйте ручное копирование в WebApp.")
     return "\n".join(lines)
 
@@ -1233,6 +1234,9 @@ def kb_connect_actions(tg_id: int, platform: str, client: str, sub_url: str):
 
     if install_meta.get("alt"):
         kb.button(text="🧩 Альтернатива (если магазин недоступен)", url=install_meta["alt"])
+
+    kb.button(text="⬅️ Назад", callback_data=f"connect:clients:{platform}")
+    kb.button(text="🏠 В меню", callback_data="back_main")
 
     kb.adjust(1)
     return kb.as_markup()
@@ -2030,6 +2034,30 @@ async def connect_choose_client(cb: CallbackQuery):
     )
     await cb.answer()
 
+
+
+
+@dp.callback_query(F.data.startswith("connect:clients:"))
+async def connect_back_to_clients(cb: CallbackQuery):
+    if not is_allowed(cb.from_user.id):
+        await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
+        return await cb.answer()
+
+    parts = cb.data.split(":")
+    if len(parts) != 3:
+        return await cb.answer("Некорректная кнопка", show_alert=True)
+
+    platform = parts[2]
+    if platform not in CONNECT_PLATFORMS:
+        return await cb.answer("Платформа не поддерживается", show_alert=True)
+
+    await show_screen(
+        cb.message.chat.id,
+        cb.from_user.id,
+        f"🔌 {CONNECT_PLATFORMS[platform]}: выберите клиент:",
+        kb_connect_clients(platform),
+    )
+    await cb.answer()
 
 @dp.callback_query(F.data.startswith("connect:client:"))
 async def connect_show_actions(cb: CallbackQuery):
