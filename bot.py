@@ -172,11 +172,11 @@ CONNECT_CLIENTS = {
 
 INSTALL_LINKS = {
     "hiddify": {
-        "android": "https://github.com/hiddify/hiddify-next/releases",
+        "android": "https://github.com/hiddify/hiddify-app/releases",
         "ios": "https://apps.apple.com/app/hiddify/id6596777532",
-        "windows": "https://github.com/hiddify/hiddify-next/releases",
-        "macos": "https://github.com/hiddify/hiddify-next/releases",
-        "linux": "https://github.com/hiddify/hiddify-next/releases",
+        "windows": "https://github.com/hiddify/hiddify-app/releases",
+        "macos": "https://github.com/hiddify/hiddify-app/releases",
+        "linux": "https://github.com/hiddify/hiddify-app/releases",
     },
     "v2ray": {
         "android": "https://github.com/2dust/v2rayNG/releases",
@@ -186,7 +186,7 @@ INSTALL_LINKS = {
         "linux": "https://github.com/2dust/v2rayN/releases",
     },
     "happ": {
-        "android": "https://play.google.com/store/apps/details?id=com.happ.proxy",
+        "android": "https://play.google.com/store/apps/details?id=com.happproxy",
         "ios": "https://apps.apple.com/us/app/happ-proxy-utility/id6504287215",
         "windows": "https://github.com/happ-proxy/happ-desktop/releases",
         "macos": "https://github.com/happ-proxy/happ-desktop/releases",
