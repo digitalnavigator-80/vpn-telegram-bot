@@ -89,6 +89,45 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 LAST_SCREEN_MESSAGE_ID: dict[int, int] = {}
+PROFILE_NAME = "OpenPortal"
+
+CONNECT_PLATFORMS = {
+    "android": "Android",
+    "ios": "iOS",
+    "windows": "Windows",
+    "macos": "macOS",
+    "linux": "Linux",
+}
+
+CONNECT_CLIENTS = {
+    "hiddify": "Hiddify",
+    "v2ray": "V2Ray",
+    "happ": "Happ",
+}
+
+INSTALL_LINKS = {
+    "hiddify": {
+        "android": "https://github.com/hiddify/hiddify-next/releases",
+        "ios": "https://apps.apple.com/app/hiddify/id6596777532",
+        "windows": "https://github.com/hiddify/hiddify-next/releases",
+        "macos": "https://github.com/hiddify/hiddify-next/releases",
+        "linux": "https://github.com/hiddify/hiddify-next/releases",
+    },
+    "v2ray": {
+        "android": "https://github.com/2dust/v2rayNG/releases",
+        "ios": "https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690",
+        "windows": "https://github.com/2dust/v2rayN/releases",
+        "macos": "https://github.com/2dust/v2rayN/releases",
+        "linux": "https://github.com/2dust/v2rayN/releases",
+    },
+    "happ": {
+        "android": "https://play.google.com/store/apps/details?id=com.happ.proxy",
+        "ios": "https://apps.apple.com/us/app/happ-proxy-utility/id6504287215",
+        "windows": "https://github.com/happ-proxy/happ-desktop/releases",
+        "macos": "https://github.com/happ-proxy/happ-desktop/releases",
+        "linux": "https://github.com/happ-proxy/happ-desktop/releases",
+    },
+}
 
 # ----------------- helpers: storage -----------------
 def _ensure_data_dir() -> None:
@@ -392,7 +431,7 @@ async def handle_getvpn(tg_user, chat_id: int):
                 "✅ Доступ одобрен!\n\n"
                 "📎 Твоя ссылка подписки (вставь в Hiddify как Subscription URL):\n"
                 f"{link}\n\n"
-                "Дальше открой «🚀 Как подключиться» и выбери своё устройство."
+                "Дальше открой «🔌 Подключиться» и выбери своё устройство."
             )
         else:
             text = (
@@ -493,6 +532,44 @@ async def activate_paid_plan(payment_id: str, status: str, source: str):
         update_payment_request(payment_id, {"status": status})
 
 
+async def copy_sub_webapp(request: web.Request):
+    sub_url = (request.query.get("sub") or "").strip()
+    platform = (request.query.get("platform") or "").strip()
+    client = (request.query.get("client") or "").strip()
+
+    html = f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenPortal — Copy Subscription</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; padding: 16px; background:#0f172a; color:#e2e8f0; }}
+.card {{ background:#1e293b; border-radius:12px; padding:16px; }}
+button {{ width:100%; padding:12px; border:0; border-radius:10px; background:#2563eb; color:white; font-size:16px; }}
+pre {{ white-space:pre-wrap; word-break:break-all; background:#0b1220; padding:12px; border-radius:8px; }}
+small {{ color:#94a3b8; }}
+</style></head>
+<body><div class="card">
+<h3>Скопировать ссылку подписки</h3>
+<p><small>Клиент: {client or '—'} · Платформа: {platform or '—'}</small></p>
+<pre id="sub"></pre>
+<button id="copy">Copy</button>
+<p id="status"><small>Если кнопка не работает — скопируйте ссылку вручную.</small></p>
+</div>
+<script>
+const subUrl = {json.dumps(sub_url)};
+document.getElementById('sub').textContent = subUrl || 'Ссылка недоступна';
+document.getElementById('copy').onclick = async () => {{
+  const status = document.getElementById('status');
+  try {{
+    await navigator.clipboard.writeText(subUrl);
+    status.innerHTML = '<small>✅ Скопировано в буфер обмена</small>';
+  }} catch (e) {{
+    status.innerHTML = '<small>⚠️ Не удалось скопировать автоматически. Скопируйте вручную.</small>';
+  }}
+}};
+</script></body></html>"""
+    return web.Response(text=html, content_type="text/html")
+
+
 async def yookassa_webhook(request: web.Request):
     secret = (request.headers.get("X-Webhook-Secret") or request.query.get("secret") or "").strip()
     if not YOOKASSA_WEBHOOK_SECRET or secret != YOOKASSA_WEBHOOK_SECRET:
@@ -517,6 +594,7 @@ async def yookassa_webhook(request: web.Request):
 async def start_webhook_server():
     app = web.Application()
     app.router.add_post("/yookassa/webhook", yookassa_webhook)
+    app.router.add_get("/webapp/copy-sub", copy_sub_webapp)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, YOOKASSA_WEBHOOK_HOST, YOOKASSA_WEBHOOK_PORT)
@@ -878,6 +956,59 @@ def format_subscription(user_json: dict, usage_json: dict | None) -> str:
 
 
 # ----------------- keyboards -----------------
+
+
+def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None, bool]:
+    enc = urllib.parse.quote(sub_url, safe="")
+    if client == "hiddify":
+        direct = f"hiddify://import/{sub_url}#{PROFILE_NAME}"
+        fallback = f"hiddify://install-sub?url={enc}#{PROFILE_NAME}"
+        if platform in ("windows", "macos", "linux"):
+            return fallback, True
+        return direct, False
+
+    if client == "v2ray":
+        if platform == "android":
+            return f"v2rayng://install-sub?url={enc}&name={PROFILE_NAME}", False
+        if platform == "ios":
+            return f"v2box://install-config?url={enc}&name={PROFILE_NAME}", False
+        return None, False
+
+    if client == "happ":
+        return f"happ://add-sub?url={enc}&name={PROFILE_NAME}", False
+
+    return None, False
+
+
+def copy_webapp_url(tg_id: int, platform: str, client: str, sub_url: str) -> str:
+    base = f"{PUBLIC_BASE_URL}/webapp/copy-sub"
+    q = urllib.parse.urlencode({
+        "tg": str(tg_id),
+        "platform": platform,
+        "client": client,
+        "sub": sub_url,
+    })
+    return f"{base}?{q}"
+
+
+def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
+    platform_name = CONNECT_PLATFORMS.get(platform, platform)
+    client_name = CONNECT_CLIENTS.get(client, client)
+    lines = [
+        f"🔌 Подключение: {platform_name} · {client_name}",
+        "",
+        "1) Установите приложение по кнопке ниже.",
+    ]
+    if has_auto:
+        lines.append("2) Нажмите «Автоподключение (1 клик)» и подтвердите импорт.")
+    else:
+        lines.append("2) Автоподключение на этой платформе не гарантируется.")
+        lines.append("3) Откройте «Скопировать ссылку подписки» и импортируйте вручную.")
+    lines.append("")
+    lines.append("Если не открылось — используйте ручное копирование в WebApp.")
+    return "\n".join(lines)
+
+
 def kb_guest():
     kb = InlineKeyboardBuilder()
     kb.button(text="📝 Запросить доступ", callback_data="req_access")
@@ -890,7 +1021,7 @@ def kb_main():
     kb = InlineKeyboardBuilder()
     kb.button(text="📎 Моя подписка", callback_data="menu_sub")
     kb.button(text="💳 Тарифы", callback_data="menu_tariffs")
-    kb.button(text="🚀 Как подключиться", callback_data="menu_connect")
+    kb.button(text="🔌 Подключиться", callback_data="menu_connect")
     kb.button(text="📊 Статус", callback_data="status")
     kb.button(text="🆘 Помощь", callback_data="help")
     kb.adjust(1)
@@ -907,13 +1038,44 @@ def kb_submenu():
     return kb.as_markup()
 
 
-def kb_connect():
+def kb_connect_os():
     kb = InlineKeyboardBuilder()
-    kb.button(text="📱 iPhone (iOS)", callback_data="how_ios")
-    kb.button(text="🤖 Android", callback_data="how_android")
-    kb.button(text="💻 Windows", callback_data="how_windows")
-    kb.button(text="🍏 macOS", callback_data="how_macos")
+    kb.button(text="🤖 Android", callback_data="connect:os:android")
+    kb.button(text="📱 iOS", callback_data="connect:os:ios")
+    kb.button(text="💻 Windows", callback_data="connect:os:windows")
+    kb.button(text="🍏 macOS", callback_data="connect:os:macos")
+    kb.button(text="🐧 Linux", callback_data="connect:os:linux")
     kb.button(text="🔙 Назад", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_connect_clients(platform: str):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Hiddify", callback_data=f"connect:client:{platform}:hiddify")
+    kb.button(text="V2Ray", callback_data=f"connect:client:{platform}:v2ray")
+    kb.button(text="Happ", callback_data=f"connect:client:{platform}:happ")
+    kb.button(text="🔙 Назад", callback_data="menu_connect")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_connect_actions(tg_id: int, platform: str, client: str, sub_url: str):
+    kb = InlineKeyboardBuilder()
+    install_url = INSTALL_LINKS.get(client, {}).get(platform)
+    if install_url:
+        kb.button(text="📥 Установить приложение", url=install_url)
+
+    auto_url, is_fallback = build_sub_link(sub_url, platform, client)
+    if auto_url:
+        auto_text = "⚡ Автоподключение (fallback)" if is_fallback else "⚡ Автоподключение (1 клик)"
+        kb.button(text=auto_text, url=auto_url)
+
+    kb.button(
+        text="📋 Скопировать ссылку подписки",
+        web_app=WebAppInfo(url=copy_webapp_url(tg_id, platform, client, sub_url)),
+    )
+    kb.button(text="🔙 Назад", callback_data=f"connect:os:{platform}")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -1326,7 +1488,7 @@ async def adm_ok(cb: CallbackQuery):
             "✅ Доступ одобрен!\n\n"
             "📎 Твоя ссылка подписки (вставь в Hiddify как Subscription URL):\n"
             f"{link}\n\n"
-            "Дальше открой «🚀 Как подключиться» и выбери своё устройство.",
+            "Дальше открой «🔌 Подключиться» и выбери своё устройство.",
             reply_markup=kb_main(),
         )
     else:
@@ -1377,7 +1539,7 @@ async def menu_connect(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
         await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    await show_screen(cb.message.chat.id, cb.from_user.id, "🚀 Выбери устройство:", kb_connect())
+    await show_screen(cb.message.chat.id, cb.from_user.id, "🔌 Выберите ОС:", kb_connect_os())
     await cb.answer()
 
 
@@ -1403,7 +1565,7 @@ async def pay_choose(cb: CallbackQuery):
     logging.info("pay: show plan tg_id=%s plan=%s", uid, plan_short)
     resolved = await resolve_marzban_username(uid, cb.from_user.username)
     if not resolved:
-        created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
+        _, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
         if err == "auth":
             await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_payment_choose())
             return await cb.answer()
@@ -1575,7 +1737,7 @@ async def plan_apply(cb: CallbackQuery):
 
     resolved = await resolve_marzban_username(uid, cb.from_user.username)
     if not resolved:
-        created, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
+        _, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
         if err == "auth":
             await show_screen(cb.message.chat.id, uid, "⚠️ Ошибка доступа к панели (Marzban). Сообщите администратору.", kb_tariffs())
             return await cb.answer()
@@ -1688,78 +1850,65 @@ async def sub_revoke(cb: CallbackQuery):
     await cb.answer()
 
 
-# -------- how-to (short, readable) --------
-@dp.callback_query(F.data == "how_ios")
-async def how_ios(cb: CallbackQuery):
+# -------- connect flow --------
+@dp.callback_query(F.data.startswith("connect:os:"))
+async def connect_choose_client(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
-        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+        await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
 
-    txt = (
-        "📱 iPhone (iOS)\n\n"
-        "Рекомендую: Hiddify (самый простой).\n"
-        "1) Установи Hiddify из App Store\n"
-        "2) Открой «📎 Моя подписка» → «📄 Показать ссылку»\n"
-        "3) В Hiddify: Import from URL → вставь ссылку\n"
-        "4) Нажми Connect\n\n"
-        "Если используешь Shadowrocket:\n"
-        "— добавь подписку по URL (Subscribe/URL) и подключись.\n"
+    parts = cb.data.split(":")
+    if len(parts) != 3:
+        return await cb.answer("Некорректная кнопка", show_alert=True)
+    platform = parts[2]
+    if platform not in CONNECT_PLATFORMS:
+        return await cb.answer("Платформа не поддерживается", show_alert=True)
+
+    await show_screen(
+        cb.message.chat.id,
+        cb.from_user.id,
+        f"🔌 {CONNECT_PLATFORMS[platform]}: выберите клиент:",
+        kb_connect_clients(platform),
     )
-    await cb.message.answer(txt)
     await cb.answer()
 
 
-@dp.callback_query(F.data == "how_android")
-async def how_android(cb: CallbackQuery):
-    if not is_allowed(cb.from_user.id):
-        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+@dp.callback_query(F.data.startswith("connect:client:"))
+async def connect_show_actions(cb: CallbackQuery):
+    uid = cb.from_user.id
+    if not is_allowed(uid):
+        await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
 
-    txt = (
-        "🤖 Android\n\n"
-        "Рекомендую: Hiddify.\n"
-        "1) Установи Hiddify\n"
-        "2) «📎 Моя подписка» → «📄 Показать ссылку»\n"
-        "3) В Hiddify: Import from URL → вставь ссылку\n"
-        "4) Connect\n"
-    )
-    await cb.message.answer(txt)
-    await cb.answer()
+    parts = cb.data.split(":")
+    if len(parts) != 4:
+        return await cb.answer("Некорректная кнопка", show_alert=True)
 
+    platform = parts[2]
+    client = parts[3]
+    if platform not in CONNECT_PLATFORMS or client not in CONNECT_CLIENTS:
+        return await cb.answer("Некорректные параметры", show_alert=True)
 
-@dp.callback_query(F.data == "how_windows")
-async def how_windows(cb: CallbackQuery):
-    if not is_allowed(cb.from_user.id):
-        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
+    resolved = await resolve_marzban_username(uid, cb.from_user.username)
+    if not resolved:
+        _, resolved, err = await ensure_user_exists(uid, cb.from_user.username)
+        if err in ("auth", "validation") or (err and err.startswith("http_")) or not resolved:
+            await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось получить ссылку подписки. Попробуйте позже.", kb_connect_clients(platform))
+            return await cb.answer()
+
+    sub_url = await get_subscription_link(resolved)
+    if not sub_url:
+        await show_screen(cb.message.chat.id, uid, "⚠️ Ссылка подписки недоступна. Обратитесь в поддержку.", kb_connect_clients(platform))
         return await cb.answer()
 
-    txt = (
-        "💻 Windows\n\n"
-        "Рекомендую: Hiddify Next.\n"
-        "1) Установи Hiddify\n"
-        "2) «📎 Моя подписка» → «📄 Показать ссылку»\n"
-        "3) В Hiddify: Import/Subscription → URL → вставь ссылку\n"
-        "4) Connect\n"
+    auto_url, _ = build_sub_link(sub_url, platform, client)
+    text = connect_help_text(platform, client, has_auto=bool(auto_url))
+    await show_screen(
+        cb.message.chat.id,
+        uid,
+        text,
+        kb_connect_actions(uid, platform, client, sub_url),
     )
-    await cb.message.answer(txt)
-    await cb.answer()
-
-
-@dp.callback_query(F.data == "how_macos")
-async def how_macos(cb: CallbackQuery):
-    if not is_allowed(cb.from_user.id):
-        await cb.message.answer("Сначала получи доступ 👇", reply_markup=kb_guest())
-        return await cb.answer()
-
-    txt = (
-        "🍏 macOS\n\n"
-        "Рекомендую: Hiddify.\n"
-        "1) Установи Hiddify\n"
-        "2) «📎 Моя подписка» → «📄 Показать ссылку»\n"
-        "3) Import from URL → вставь ссылку\n"
-        "4) Connect\n"
-    )
-    await cb.message.answer(txt)
     await cb.answer()
 
 
