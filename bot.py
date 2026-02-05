@@ -172,6 +172,8 @@ CONNECT_CLIENTS = {
     "happ": "Happ",
 }
 
+APP_UNAVAILABLE_IN_REGION_TEXT = "Если приложение не доступно в вашем регионе — используйте альтернативную ссылку."
+
 INSTALL_LINKS = {
     "hiddify": {
         "android": {
@@ -1189,7 +1191,7 @@ def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
         "",
         "1) Установите приложение по кнопке ниже.",
         "Лучше ставить из магазина — проще и безопаснее.",
-        "Если магазин недоступен в вашем регионе — используйте альтернативную ссылку.",
+        APP_UNAVAILABLE_IN_REGION_TEXT,
     ]
     if has_auto:
         lines.append("2) Нажмите «Автоподключение (1 клик)» и подтвердите импорт.")
