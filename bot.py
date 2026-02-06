@@ -1160,7 +1160,7 @@ def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None
 
     if client == "v2ray":
         if platform == "android":
-            return f"v2rayng://install-sub?url={enc}&name={PROFILE_NAME}", False
+            return f"v2raytun://import/{enc}", False
         if platform == "ios":
             return f"v2box://install-config?url={enc}&name={PROFILE_NAME}", False
         return None, False
