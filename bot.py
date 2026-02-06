@@ -190,7 +190,7 @@ INSTALL_LINKS = {
     },
     "v2ray": {
         "android": {
-            "store": None,
+            "store": "https://play.google.com/store/apps/details?id=com.v2raytun.android",
             "alt": "https://github.com/2dust/v2rayNG/releases",
         },
         "ios": {
@@ -1274,17 +1274,6 @@ def kb_connect_actions(platform: str, client: str, sub_url: str):
         kb.button(text="📥 Установить из магазина", url=install_meta["store"])
 
     kb.button(text="⚡ Автоподключение (1 клик)", url=connect_page_url(normalized_platform, normalized_client, sub_url))
-
-    enc_sub_url = urllib.parse.quote(sub_url, safe="")
-    copy_url = (
-        f"{CONNECT_PAGE_BASE_URL}/connect/?mode=copy"
-        f"&client={urllib.parse.quote(normalized_client, safe='')}"
-        f"&platform={urllib.parse.quote(normalized_platform, safe='')}"
-        f"&sub={enc_sub_url}"
-    )
-    if BOT_PUBLIC_USERNAME:
-        copy_url += f"&bot={urllib.parse.quote(BOT_PUBLIC_USERNAME, safe='')}"
-    kb.button(text="📋 Скопировать ссылку", url=copy_url)
 
     if install_meta.get("alt"):
         kb.button(text="🧩 Альтернатива", url=install_meta["alt"])
