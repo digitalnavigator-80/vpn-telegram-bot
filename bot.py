@@ -169,7 +169,7 @@ CONNECT_PLATFORMS = {
 CONNECT_CLIENTS = {
     "hiddify": "Hiddify",
     "v2ray": "V2Ray",
-    "happ": "Happ",
+    "v2box": "v2Box",
 }
 
 APP_UNAVAILABLE_IN_REGION_TEXT = "Если приложение не доступно в вашем регионе — используйте альтернативную ссылку."
@@ -201,18 +201,15 @@ INSTALL_LINKS = {
         "macos": {"store": None, "alt": "https://github.com/2dust/v2rayN/releases"},
         "linux": {"store": None, "alt": "https://github.com/2dust/v2rayN/releases"},
     },
-    "happ": {
+    "v2box": {
         "android": {
-            "store": "https://play.google.com/store/apps/details?id=com.happproxy",
-            "alt": "https://github.com/Happ-proxy/happ-desktop/releases",
+            "store": None,
+            "alt": "https://play.google.com/store/search?q=v2Box&c=apps",
         },
         "ios": {
-            "store": "https://apps.apple.com/app/id6504287215",
-            "alt": "https://github.com/Happ-proxy/happ-desktop/releases",
+            "store": None,
+            "alt": "https://apps.apple.com/us/search?term=v2box",
         },
-        "windows": {"store": None, "alt": "https://github.com/Happ-proxy/happ-desktop/releases"},
-        "macos": {"store": None, "alt": "https://github.com/Happ-proxy/happ-desktop/releases"},
-        "linux": {"store": None, "alt": "https://github.com/Happ-proxy/happ-desktop/releases"},
     },
 }
 
@@ -230,7 +227,8 @@ CLIENT_ALIASES = {
     "v2rayn": "v2ray",
     "v2rayng": "v2ray",
     "hiddify-next": "hiddify",
-    "happ proxy": "happ",
+    "happ proxy": "v2box",
+    "happ": "v2box",
 }
 
 
@@ -1165,8 +1163,10 @@ def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None
             return f"v2box://install-config?url={enc}&name={PROFILE_NAME}", False
         return None, False
 
-    if client == "happ":
-        return f"happ://add-sub?url={enc}&name={PROFILE_NAME}", False
+    if client == "v2box":
+        if platform in ("android", "ios"):
+            return f"v2box://install-config?url={enc}&name={PROFILE_NAME}", False
+        return None, False
 
     return None, False
 
@@ -1184,6 +1184,10 @@ def connect_page_url(platform: str, client: str, sub_url: str) -> str:
     return f"{base}?{q}"
 
 
+def connect_page_copy_url(platform: str, client: str, sub_url: str) -> str:
+    return f"{connect_page_url(platform, client, sub_url)}&mode=copy"
+
+
 
 def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
     platform_name = CONNECT_PLATFORMS.get(platform, platform)
@@ -1196,10 +1200,17 @@ def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
         APP_UNAVAILABLE_IN_REGION_TEXT,
     ]
     if has_auto:
-        lines.append("2) Нажмите «Автоподключение (1 клик)» и подтвердите импорт.")
+        lines.append("2) Нажмите «🚀 Автоподключение» и подтвердите импорт.")
     else:
         lines.append("2) Автоподключение на этой платформе не гарантируется.")
-        lines.append("3) Нажмите «Скопировать ссылку подписки» и импортируйте вручную.")
+        lines.append("3) Нажмите «📋 Скопировать ссылку» и импортируйте вручную.")
+    if client == "v2box":
+        lines.extend([
+            "",
+            "📱 v2Box",
+            "Рекомендуем автоподключение — это самый быстрый способ.",
+            "Если не сработало, используйте «Скопировать ссылку» и импорт в приложении.",
+        ])
     lines.append("")
     lines.append("Если потерялись — нажмите «Назад».")
     lines.append("Если не открылось — используйте ручное копирование через connect-страницу.")
@@ -1251,8 +1262,16 @@ def kb_connect_clients(platform: str):
     kb = InlineKeyboardBuilder()
     kb.button(text="Hiddify", callback_data=f"connect:client:{platform}:hiddify")
     kb.button(text="V2Ray", callback_data=f"connect:client:{platform}:v2ray")
-    kb.button(text="Happ", callback_data=f"connect:client:{platform}:happ")
+    kb.button(text="v2Box", callback_data=f"connect:client:{platform}:v2box")
     kb.button(text="🔙 Назад", callback_data="menu_connect")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_connect_unavailable(platform: str):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data=f"connect:clients:{platform}")
+    kb.button(text="🏠 В меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -1272,10 +1291,19 @@ def kb_connect_actions(platform: str, client: str, sub_url: str):
 
     if install_meta.get("store"):
         kb.button(text="📥 Установить из магазина", url=install_meta["store"])
+    elif normalized_client == "v2box":
+        if normalized_platform == "android":
+            kb.button(text="🔎 Найти v2Box в магазине", url=install_meta.get("alt"))
+        elif normalized_platform == "ios":
+            kb.button(text="🔎 Найти v2Box в App Store", url=install_meta.get("alt"))
 
-    kb.button(text="⚡ Автоподключение (1 клик)", url=connect_page_url(normalized_platform, normalized_client, sub_url))
+    auto_url, _ = build_sub_link(sub_url, normalized_platform, normalized_client)
+    if auto_url:
+        kb.button(text="🚀 Автоподключение", url=connect_page_url(normalized_platform, normalized_client, sub_url))
+    kb.button(text="📋 Скопировать ссылку", url=connect_page_copy_url(normalized_platform, normalized_client, sub_url))
+    kb.button(text=f"📖 Инструкция", callback_data=f"connect:instruction:{normalized_platform}:{normalized_client}")
 
-    if install_meta.get("alt"):
+    if install_meta.get("alt") and normalized_client != "v2box":
         kb.button(text="🧩 Альтернатива", url=install_meta["alt"])
 
     kb.button(text="⬅️ Назад", callback_data=f"connect:clients:{normalized_platform}")
@@ -2150,8 +2178,19 @@ async def connect_show_actions(cb: CallbackQuery):
 
     platform = parts[2]
     client = parts[3]
+    if client == "happ":
+        client = "v2box"
     if platform not in CONNECT_PLATFORMS or client not in CONNECT_CLIENTS:
         return await cb.answer("Некорректные параметры", show_alert=True)
+
+    if platform not in INSTALL_LINKS.get(client, {}):
+        await show_screen(
+            cb.message.chat.id,
+            uid,
+            "⚠️ Недоступно для этой платформы",
+            kb_connect_unavailable(platform),
+        )
+        return await cb.answer()
 
     resolved = await resolve_marzban_username(uid, cb.from_user.username)
     if not resolved:
@@ -2174,6 +2213,24 @@ async def connect_show_actions(cb: CallbackQuery):
         kb_connect_actions(platform, client, sub_url),
     )
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("connect:instruction:"))
+async def connect_instruction(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    if len(parts) != 4:
+        return await cb.answer("Некорректная кнопка", show_alert=True)
+
+    platform = parts[2]
+    client = parts[3]
+    if platform not in CONNECT_PLATFORMS or client not in CONNECT_CLIENTS:
+        return await cb.answer("Некорректные параметры", show_alert=True)
+
+    client_name = CONNECT_CLIENTS[client]
+    await cb.answer(
+        f"{client_name}: откройте приложение, добавьте подписку через буфер обмена и подтвердите импорт.",
+        show_alert=True,
+    )
 
 
 # -------- status (human readable) --------
