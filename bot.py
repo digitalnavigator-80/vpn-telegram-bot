@@ -757,6 +757,7 @@ async def connect_page_web(request: web.Request):
     html = f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenPortal — Connect</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; padding: 16px; background:#0f172a; color:#e2e8f0; }}
 .card {{ background:#1e293b; border-radius:12px; padding:16px; }}
@@ -768,7 +769,7 @@ button {{ width:100%; padding:12px; border:0; border-radius:10px; color:white; f
 .notice {{ background:#0b1220; border-radius:10px; padding:12px; margin-top:12px; }}
 .steps {{ margin:10px 0 0 0; padding-left:18px; line-height:1.5; }}
 .steps li {{ margin-bottom:8px; }}
-pre {{ white-space:pre-wrap; word-break:break-all; background:#0b1220; padding:12px; border-radius:8px; margin-top:12px; }}
+pre {{ white-space:pre-wrap; word-break:break-all; background:#0b1220; padding:12px; border-radius:8px; margin-top:12px; cursor:pointer; }}
 small {{ color:#94a3b8; }}
 </style></head>
 <body><div class="card">
@@ -803,10 +804,67 @@ const titleEl = document.querySelector('h3');
 const openButton = document.getElementById('open');
 const copyButton = document.getElementById('copy');
 const backButton = document.getElementById('back');
-document.getElementById('sub').textContent = subUrl || 'Ссылка недоступна';
+const subEl = document.getElementById('sub');
 
-if (mode === 'copy') {{
-  titleEl.textContent = '📋 Скопируйте ссылку';
+function shortenLink(fullUrl, head = 24, tail = 8) {{
+  if (!fullUrl) return 'Ссылка недоступна';
+  if (fullUrl.length <= head + tail + 3) return fullUrl;
+  return `${{fullUrl.slice(0, head)}}...${{fullUrl.slice(-tail)}}`;
+}}
+
+function showCopyResult(ok) {{
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if (tg && typeof tg.showPopup === 'function') {{
+    tg.showPopup({{
+      title: ok ? 'Готово' : 'Ошибка',
+      message: ok ? 'Ссылка скопирована в буфер обмена' : 'Не удалось скопировать ссылку, попробуйте ещё раз',
+      buttons: [{{ type: 'ok' }}],
+    }});
+    return;
+  }}
+  status.innerHTML = ok
+    ? '<small>✅ Ссылка скопирована в буфер обмена</small>'
+    : '<small>⚠️ Не удалось скопировать ссылку, попробуйте ещё раз</small>';
+}}
+
+async function copyToClipboard(text) {{
+  const normalized = (text || '').replace(/[\r\n]+/g, '').trim();
+  if (!normalized) {{
+    showCopyResult(false);
+    return;
+  }}
+  try {{
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      await navigator.clipboard.writeText(normalized);
+      showCopyResult(true);
+      return;
+    }}
+    throw new Error('Clipboard API unavailable');
+  }} catch (error) {{
+    const area = document.createElement('textarea');
+    area.value = normalized;
+    area.setAttribute('readonly', 'readonly');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    area.style.left = '-9999px';
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    try {{
+      const copied = document.execCommand('copy');
+      showCopyResult(Boolean(copied));
+    }} catch (fallbackError) {{
+      showCopyResult(false);
+    }} finally {{
+      document.body.removeChild(area);
+    }}
+  }}
+}}
+
+subEl.textContent = mode === 'subcopy' ? shortenLink(subUrl) : (subUrl || 'Ссылка недоступна');
+
+if (mode === 'copy' || mode === 'subcopy') {{
+  titleEl.textContent = mode === 'subcopy' ? '🔗 Ссылка на подписку' : '📋 Скопируйте ссылку';
   copyButton.classList.remove('secondary');
   copyButton.classList.add('primary');
   openButton.classList.remove('primary');
@@ -819,15 +877,20 @@ function openApp() {{
 }}
 
 openButton.onclick = () => {{
+  if (mode === 'subcopy') {{
+    copyToClipboard(subUrl);
+    return;
+  }}
   openApp();
 }};
 
 copyButton.onclick = async () => {{
-  try {{
-    await navigator.clipboard.writeText(subUrl);
-    status.innerHTML = '<small>✅ Ссылка скопирована в буфер обмена<br><br>Теперь:<br>откройте приложение → нажмите «+» → выберите «Вставить из буфера»</small>';
-  }} catch (e) {{
-    status.innerHTML = '<small>⚠️ Не удалось скопировать автоматически. Скопируйте вручную.</small>';
+  await copyToClipboard(subUrl);
+}};
+
+subEl.onclick = async () => {{
+  if (mode === 'subcopy') {{
+    await copyToClipboard(subUrl);
   }}
 }};
 
@@ -849,6 +912,10 @@ backButton.onclick = () => {{
 
 if (mode === 'copy') {{
   status.innerHTML = '<small>Нажмите «Скопировать ссылку» и выполните шаги выше.</small>';
+}} else if (mode === 'subcopy') {{
+  openButton.textContent = '📎 Скопировать ссылку';
+  copyButton.textContent = '📋 Скопировать';
+  status.innerHTML = '<small>Нажмите на ссылку или кнопку, чтобы скопировать полный URL подписки.</small>';
 }} else {{
   openApp();
   setTimeout(() => {{
@@ -938,15 +1005,32 @@ async def handle_subscription(tg_user, chat_id: int):
         await show_screen(chat_id, uid, text, kb_my_subscription_inactive(uid))
         return
 
+    sub_link = None
+    sub_path = (user_data.get("subscription_url") or "").strip()
+    if sub_path and PUBLIC_BASE_URL:
+        if sub_path.startswith("/"):
+            sub_link = f"{PUBLIC_BASE_URL}{sub_path}"
+        else:
+            sub_link = f"{PUBLIC_BASE_URL}/{sub_path}"
+
     tariff = "Trial" if plan_id == "trial_7d" else "Paid"
     valid_till = expire_dt.strftime("%d.%m.%Y") if expire_dt else "Без срока"
-    text = (
-        f"{greeting}\n\n"
-        "Статус: 🟢 Активна\n"
-        f"Тариф: {tariff}\n"
-        f"Действует до: {valid_till}"
-    )
-    await show_screen(chat_id, uid, text, kb_my_subscription_active())
+    text_lines = [
+        f"{greeting}",
+        "",
+        "Статус: 🟢 Активна",
+        f"Тариф: {tariff}",
+        f"Действует до: {valid_till}",
+        "",
+        "🔗 Ссылка на подписку",
+    ]
+    if sub_link:
+        text_lines.append(shorten_link(sub_link))
+        text_lines.append("Нажмите на кнопку ниже, чтобы скопировать полную ссылку.")
+    else:
+        text_lines.append("Нет активной подписки")
+
+    await show_screen(chat_id, uid, "\n".join(text_lines), kb_my_subscription_active(sub_link))
 
 
 async def api_get_user(username: str):
@@ -1257,6 +1341,25 @@ def connect_page_copy_url(platform: str, client: str, sub_url: str) -> str:
     return f"{connect_page_url(platform, client, sub_url)}&mode=copy"
 
 
+def subscription_copy_page_url(sub_url: str) -> str:
+    base = f"{CONNECT_PAGE_BASE_URL}/connect/"
+    params = {
+        "sub": sub_url,
+        "mode": "subcopy",
+    }
+    if BOT_PUBLIC_USERNAME:
+        params["bot"] = BOT_PUBLIC_USERNAME
+    return f"{base}?{urllib.parse.urlencode(params)}"
+
+
+def shorten_link(full_url: str, head: int = 24, tail: int = 8) -> str:
+    if not full_url:
+        return ""
+    if len(full_url) <= head + tail + 3:
+        return full_url
+    return f"{full_url[:head]}...{full_url[-tail:]}"
+
+
 
 def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
     platform_name = CONNECT_PLATFORMS.get(platform, platform)
@@ -1305,8 +1408,10 @@ def kb_main(tg_id: int):
     return kb.as_markup()
 
 
-def kb_my_subscription_active():
+def kb_my_subscription_active(sub_url: str | None = None):
     kb = InlineKeyboardBuilder()
+    if sub_url:
+        kb.button(text="📋 Скопировать ссылку", web_app=WebAppInfo(url=subscription_copy_page_url(sub_url)))
     kb.button(text="🔗 Подключить VPN", callback_data="menu_connect")
     kb.button(text="🔄 Обновить подписку", callback_data="menu_tariffs")
     kb.button(text="🛟 Поддержка", callback_data="help")
