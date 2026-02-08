@@ -1698,6 +1698,25 @@ def home_text(user) -> str:
     return f"{get_home_greeting(user)}\n\nВыберите действие ниже."
 
 
+def start_screen_text(user) -> str:
+    return (
+        f"{get_home_greeting(user)}\n\n"
+        "Это Open-Portal VPN — простой и стабильный VPN для работы в РФ.\n\n"
+        "🚀 Подключение занимает 1–2 минуты\n"
+        "🎁 Бесплатный тест — 7 дней (один раз)\n"
+        "🛡 Стабильная работа и высокая скорость\n"
+        "🕐 Поддержка 24/7 (в разработке)\n\n"
+        "Нажмите кнопку ниже, чтобы начать подключение."
+    )
+
+
+def kb_start_screen():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔌 Начать подключение", callback_data="menu_connect")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def profile_greeting(user) -> str:
     first_name = (getattr(user, "first_name", "") or "").strip()
     if first_name:
@@ -1719,7 +1738,7 @@ def escape_markdown(text: str) -> str:
 async def start(message: Message):
     save_user_profile(message.from_user)
     uid = message.from_user.id
-    greeting = home_text(message.from_user)
+    greeting = start_screen_text(message.from_user)
     try:
         await bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -1729,7 +1748,7 @@ async def start(message: Message):
         message.chat.id,
         uid,
         greeting,
-        kb_main(uid),
+        kb_start_screen(),
     )
 
 
