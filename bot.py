@@ -61,6 +61,31 @@ PLANS = {
     "trial_7d": {"days": TRIAL_DAYS, "price": 0, "title": "Trial — 7 дней"},
     "month_30d": {"days": MONTH_DAYS, "price": MONTH_PRICE_RUB, "title": "1 месяц"},
     "year_365d": {"days": YEAR_DAYS, "price": YEAR_PRICE_RUB, "title": "1 год"},
+    "test_1d": {"days": 1, "price": 10, "title": "🧪 Тестовый доступ (1 день)"},
+}
+
+PAID_PLANS = {
+    "test1d": {
+        "title": "🧪 Тестовый доступ (1 день)",
+        "amount": 10,
+        "days": 1,
+        "selected_plan": "test_1d",
+        "description": "Подходит для проверки оплаты",
+    },
+    "month": {
+        "title": "1 месяц",
+        "amount": MONTH_PRICE_RUB,
+        "days": MONTH_DAYS,
+        "selected_plan": "month_30d",
+        "description": "",
+    },
+    "year": {
+        "title": "1 год",
+        "amount": YEAR_PRICE_RUB,
+        "days": YEAR_DAYS,
+        "selected_plan": "year_365d",
+        "description": "",
+    },
 }
 
 DATA_DIR = "data"
@@ -623,22 +648,21 @@ def help_text() -> str:
     )
 
 
-def payment_screen_text(plan_id: str) -> str:
-    if plan_id in ("year_365d", "year"):
-        return (
-            "💳 Оплата тарифа: 1 год\n"
-            f"Сумма: {YEAR_PRICE_RUB} ₽ (-15%)\n\n"
-            "Нажмите «Перейти к оплате».\n"
-            "После оплаты нажмите «Проверить оплату».\n\n"
-            "Сейчас доступен Trial (безлимит, бессрочно)."
-        )
-    return (
-        "💳 Оплата тарифа: 1 месяц\n"
-        f"Сумма: {MONTH_PRICE_RUB} ₽\n\n"
-        "Нажмите «Перейти к оплате».\n"
-        "После оплаты нажмите «Проверить оплату».\n\n"
-        "Сейчас доступен Trial (безлимит, бессрочно)."
-    )
+def payment_screen_text(plan_short: str) -> str:
+    plan = PAID_PLANS.get(plan_short) or PAID_PLANS["month"]
+    lines = [
+        f"💳 Оплата тарифа: {plan['title']}",
+        f"Сумма: {plan['amount']} ₽",
+        "",
+        "Нажмите «Перейти к оплате».",
+        "После оплаты нажмите «Проверить оплату».",
+    ]
+    if plan_short == "test1d":
+        lines.extend([
+            "",
+            "Тестовый платёж. Тариф будет удалён позже.",
+        ])
+    return "\n".join(lines)
 
 
 def payment_unavailable_text() -> str:
@@ -661,23 +685,64 @@ async def activate_paid_plan(payment_id: str, status: str, source: str):
     if not item:
         logging.warning("pay: missing payment_id=%s source=%s", payment_id, source)
         return
+
     plan_short = item.get("plan")
+    plan = PAID_PLANS.get(plan_short or "")
     tg_id = item.get("tg_id")
     username = item.get("username")
-    if status == "succeeded":
-        update_payment_request(payment_id, {"status": "succeeded"})
-        set_selected_plan(int(tg_id), "month_30d" if plan_short == "month" else "year_365d")
-        if PLANS_UNLIMITED_ENABLED and username:
-            code_u, text_u = await api_get_user(username)
-            if code_u == 200:
-                data_u = _parse_json(text_u)
-                if isinstance(data_u, dict):
-                    note_base = (data_u.get("note") or "").strip()
-                    note_add = f"plan={plan_short} payment_id={payment_id}"
-                    note = f"{note_base} | {note_add}".strip(" |") if note_base else note_add
-                    await api_put_user(username, {"note": note})
-    else:
+
+    if status != "succeeded":
         update_payment_request(payment_id, {"status": status})
+        return
+
+    if not plan:
+        logging.warning("pay: unknown plan payment_id=%s plan=%s", payment_id, plan_short)
+        update_payment_request(payment_id, {"status": status})
+        return
+
+    if tg_id is None:
+        logging.warning("pay: missing tg_id payment_id=%s", payment_id)
+        update_payment_request(payment_id, {"status": status})
+        return
+
+    update_payment_request(payment_id, {"status": "succeeded"})
+    set_selected_plan(int(tg_id), plan["selected_plan"])
+
+    if not username:
+        return
+
+    code_u, text_u = await api_get_user(username)
+    if code_u != 200:
+        logging.warning("pay: failed fetch user payment_id=%s username=%s code=%s", payment_id, username, code_u)
+        return
+
+    data_u = _parse_json(text_u)
+    if not isinstance(data_u, dict):
+        logging.warning("pay: bad user payload payment_id=%s username=%s", payment_id, username)
+        return
+
+    now_utc = datetime.now(timezone.utc)
+    current_expire = parse_expire_from_user_json(data_u.get("expire"))
+    new_expire, _ = compute_expire(now_utc, current_expire, plan["days"])
+
+    note_base = (data_u.get("note") or "").strip()
+    note_add = f"plan={plan_short} payment_id={payment_id}"
+    note = f"{note_base} | {note_add}".strip(" |") if note_base else note_add
+
+    payload = {
+        "expire": format_expire_for_api(new_expire),
+        "status": "active",
+        "note": note,
+    }
+    code_p, text_p = await api_put_user(username, payload)
+    if code_p not in (200, 204):
+        logging.warning(
+            "pay: failed apply plan payment_id=%s username=%s code=%s body=%s",
+            payment_id,
+            username,
+            code_p,
+            text_p[:200],
+        )
 
 
 async def connect_page_web(request: web.Request):
@@ -1360,6 +1425,7 @@ def kb_connect_actions(platform: str, client: str, sub_url: str):
 
 def kb_tariffs(tg_id: int):
     kb = InlineKeyboardBuilder()
+    kb.button(text="🧪 Тестовый доступ (1 день) — 10 ₽", callback_data="pay:choose:test1d")
     if trial_available(tg_id):
         kb.button(text="🎁 Trial — 7 дней (0₽)", callback_data="plan:trial_7d")
     kb.button(text="📅 1 месяц — 150₽", callback_data="pay:choose:month")
@@ -1367,7 +1433,6 @@ def kb_tariffs(tg_id: int):
     kb.button(text="⬅️ Назад", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
-
 
 def kb_subscription_actions():
     kb = InlineKeyboardBuilder()
@@ -1378,12 +1443,12 @@ def kb_subscription_actions():
 
 def kb_trial_used():
     kb = InlineKeyboardBuilder()
+    kb.button(text="🧪 Тестовый доступ (1 день) — 10 ₽", callback_data="pay:choose:test1d")
     kb.button(text="📅 1 месяц", callback_data="pay:choose:month")
     kb.button(text=f"💎 1 год — {YEAR_PRICE_RUB}₽ (-15%)", callback_data="pay:choose:year")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
-
 
 def kb_plan_selected():
     kb = InlineKeyboardBuilder()
@@ -1423,16 +1488,17 @@ def kb_payment(plan_id: str):
 
 def kb_payment_choose():
     kb = InlineKeyboardBuilder()
+    kb.button(text="🧪 Тестовый доступ (1 день) — 10 ₽", callback_data="pay:choose:test1d")
     kb.button(text="📅 1 месяц", callback_data="pay:choose:month")
     kb.button(text="💎 1 год", callback_data="pay:choose:year")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
 
-
 def kb_payment_checkout(confirmation_url: str, payment_id: str, plan_short: str):
     kb = InlineKeyboardBuilder()
-    kb.button(text="🧩 Оплата внутри Telegram", web_app=WebAppInfo(url=confirmation_url))
+    amount = PAID_PLANS.get(plan_short, PAID_PLANS["month"])["amount"]
+    kb.button(text=f"🧩 Оплатить {amount} ₽", web_app=WebAppInfo(url=confirmation_url))
     kb.button(text="🔄 Проверить оплату", callback_data=f"pay:check:{payment_id}")
     kb.button(text="⬅️ Назад к тарифам", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
@@ -1440,7 +1506,6 @@ def kb_payment_checkout(confirmation_url: str, payment_id: str, plan_short: str)
         kb.button(text="✅ Я оплатил (тест)", callback_data=f"pay:confirm_test:{plan_short}")
     kb.adjust(1)
     return kb.as_markup()
-
 
 def kb_admin_request(user_id: int):
     kb = InlineKeyboardBuilder()
@@ -1695,7 +1760,7 @@ async def cmd_tariffs(message: Message):
     await show_screen(
         message.chat.id,
         message.from_user.id,
-        f"💳 Тарифы для {get_display_name(message.from_user)}:",
+        f"💳 Тарифы для {get_display_name(message.from_user)}\n\nПодходит для проверки оплаты",
         kb_tariffs(message.from_user.id),
     )
 
@@ -1903,7 +1968,7 @@ async def menu_tariffs(cb: CallbackQuery):
     await show_screen(
         cb.message.chat.id,
         cb.from_user.id,
-        f"💳 Тарифы для {get_display_name(cb.from_user)}:",
+        f"💳 Тарифы для {get_display_name(cb.from_user)}\n\nПодходит для проверки оплаты",
         kb_tariffs(cb.from_user.id),
     )
     await cb.answer()
@@ -1913,7 +1978,7 @@ async def menu_tariffs(cb: CallbackQuery):
 async def pay_choose(cb: CallbackQuery):
     uid = cb.from_user.id
     plan_short = cb.data.split(":", 2)[2]
-    if plan_short not in ("month", "year"):
+    if plan_short not in PAID_PLANS:
         await show_screen(cb.message.chat.id, uid, "⚠️ Неизвестный тариф.", kb_payment_choose())
         return await cb.answer()
     logging.info("pay: show plan tg_id=%s plan=%s", uid, plan_short)
@@ -1941,7 +2006,7 @@ async def pay_choose(cb: CallbackQuery):
         await show_screen(cb.message.chat.id, uid, payment_unavailable_text(), kb_payment_unavailable())
         return await cb.answer()
 
-    amount = MONTH_PRICE_RUB if plan_short == "month" else YEAR_PRICE_RUB
+    amount = PAID_PLANS[plan_short]["amount"]
     logging.info("pay: yookassa create start tg_id=%s plan=%s amount=%s", uid, plan_short, amount)
     payment_id, confirmation_url, idempotence_key = await create_yookassa_payment(uid, resolved, plan_short, amount)
     if not payment_id or not confirmation_url:
@@ -1977,7 +2042,7 @@ async def pay_test(cb: CallbackQuery):
     uid = cb.from_user.id
 
     plan_short = cb.data.split(":", 2)[2]
-    if plan_short not in ("month", "year"):
+    if plan_short not in PAID_PLANS:
         await show_screen(cb.message.chat.id, uid, "⚠️ Неизвестный тариф.", kb_payment_choose())
         return await cb.answer()
 
@@ -1993,7 +2058,7 @@ async def pay_test(cb: CallbackQuery):
 
     now = datetime.now(timezone.utc)
     request_id = f"REQ_{now.strftime('%Y%m%d_%H%M%S')}_{uid}"
-    amount = MONTH_PRICE_RUB if plan_short == "month" else YEAR_PRICE_RUB
+    amount = PAID_PLANS[plan_short]["amount"]
     created_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     logging.info("pay: create request_id=%s tg_id=%s plan=%s amount=%s", request_id, uid, plan_short, amount)
     save_payment_request(
@@ -2009,13 +2074,13 @@ async def pay_test(cb: CallbackQuery):
         },
     )
 
-    set_selected_plan(uid, "month_30d" if plan_short == "month" else "year_365d")
+    set_selected_plan(uid, PAID_PLANS[plan_short]["selected_plan"])
     logging.info("pay: paid_test request_id=%s tg_id=%s plan=%s unlimited=1", request_id, uid, plan_short)
-    human_title = "1 месяц" if plan_short == "month" else "1 год"
+    human_title = PAID_PLANS.get(plan_short or "", PAID_PLANS["month"])["title"]
     await show_screen(
         cb.message.chat.id,
         uid,
-        f"✅ Оплата подтверждена (тест)\nТариф активирован: {human_title}\n∞ Безлимит\n⏳ Без срока действия",
+        f"✅ Оплата подтверждена (тест)\nТариф активирован: {human_title}",
         kb_plan_selected(),
     )
     await cb.answer()
@@ -2035,11 +2100,11 @@ async def pay_check(cb: CallbackQuery):
         await activate_paid_plan(payment_id, status, "check")
         item = get_payment_request(payment_id) or {}
         plan_short = item.get("plan")
-        human_title = "1 месяц" if plan_short == "month" else "1 год"
+        human_title = PAID_PLANS.get(plan_short or "", PAID_PLANS["month"])["title"]
         await show_screen(
             cb.message.chat.id,
             uid,
-            f"✅ Оплата подтверждена\nТариф активирован: {human_title}\n∞ Безлимит\n⏳ Без срока действия",
+            f"✅ Оплата подтверждена\nТариф активирован: {human_title}",
             kb_plan_selected(),
         )
         return await cb.answer()
