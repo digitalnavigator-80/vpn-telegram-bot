@@ -67,6 +67,7 @@ DATA_DIR = "data"
 ALLOWED_PATH = f"{DATA_DIR}/allowed.json"
 PENDING_PATH = f"{DATA_DIR}/pending.json"
 USER_MAP_PATH = f"{DATA_DIR}/user_map.json"
+USER_PROFILE_PATH = f"{DATA_DIR}/user_profile.json"
 TRIAL_USED_PATH = f"{DATA_DIR}/trial_used.json"
 PLAN_SELECTED_PATH = f"{DATA_DIR}/plan_selected.json"
 PAYMENT_REQUESTS_PATH = f"{DATA_DIR}/payment_requests.json"
@@ -170,6 +171,14 @@ CONNECT_CLIENTS = {
     "hiddify": "Hiddify",
     "v2ray": "V2Ray",
     "v2box": "v2Box",
+}
+
+RECOMMENDED_APPS = {
+    "android": "hiddify",
+    "ios": "hiddify",
+    "windows": "hiddify",
+    "macos": "hiddify",
+    "linux": "hiddify",
 }
 
 APP_UNAVAILABLE_IN_REGION_TEXT = "Если приложение не доступно в вашем регионе — используйте альтернативную ссылку."
@@ -276,6 +285,34 @@ def _read_json_map(path: str) -> dict:
 
 def _write_json_map(path: str, data: dict) -> None:
     save_json(path, data)
+
+
+def _get_user_profile(tg_id: int) -> dict:
+    data = _read_json_map(USER_PROFILE_PATH)
+    profile = data.get(str(tg_id))
+    return profile if isinstance(profile, dict) else {}
+
+
+def save_user_profile(user) -> None:
+    tg_id = getattr(user, "id", None)
+    if not tg_id:
+        return
+    data = _read_json_map(USER_PROFILE_PATH)
+    key = str(tg_id)
+    profile = data.get(key)
+    if not isinstance(profile, dict):
+        profile = {}
+
+    first_name = (getattr(user, "first_name", "") or "").strip()
+    username = (getattr(user, "username", "") or "").strip().lstrip("@")
+
+    if first_name and not profile.get("first_name"):
+        profile["first_name"] = first_name
+    if username and not profile.get("username"):
+        profile["username"] = username
+
+    data[key] = profile
+    _write_json_map(USER_PROFILE_PATH, data)
 
 
 def is_admin(user_id: int) -> bool:
@@ -517,6 +554,7 @@ async def ensure_reply_keyboard(chat_id: int):
 
 
 async def handle_getvpn(tg_user, chat_id: int):
+    save_user_profile(tg_user)
     uid = tg_user.id
     display_name = get_display_name(tg_user)
     if TEST_MODE_ENABLED:
@@ -787,6 +825,7 @@ async def start_webhook_server():
     site = web.TCPSite(runner, YOOKASSA_WEBHOOK_HOST, YOOKASSA_WEBHOOK_PORT)
     await site.start()
 async def handle_subscription(tg_user, chat_id: int):
+    save_user_profile(tg_user)
     uid = tg_user.id
     display_name = get_display_name(tg_user)
     if not is_allowed(uid):
@@ -1191,47 +1230,40 @@ def connect_page_copy_url(platform: str, client: str, sub_url: str) -> str:
 
 def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
     platform_name = CONNECT_PLATFORMS.get(platform, platform)
-    client_name = CONNECT_CLIENTS.get(client, client)
+    app_name = CONNECT_CLIENTS.get(client, client)
     lines = [
-        f"🔌 Подключение: {platform_name} · {client_name}",
+        f"🔌 Подключение: {platform_name} · {app_name}",
         "",
+        "Мы подключим VPN автоматически.",
+        "Если не получится — используйте «📋 Скопировать ссылку».",
+        "",
+        "Следующий шаг:",
         "1) Установите приложение по кнопке ниже.",
-        "Лучше ставить из магазина — проще и безопаснее.",
-        APP_UNAVAILABLE_IN_REGION_TEXT,
     ]
     if has_auto:
-        lines.append("2) Нажмите «🚀 Автоподключение» и подтвердите импорт.")
+        lines.append("2) Нажмите «🚀 Автоподключение».")
     else:
-        lines.append("2) Автоподключение на этой платформе не гарантируется.")
-        lines.append("3) Нажмите «📋 Скопировать ссылку» и импортируйте вручную.")
-    if client == "v2box":
-        lines.extend([
-            "",
-            "📱 v2Box",
-            "Рекомендуем автоподключение — это самый быстрый способ.",
-            "Если не сработало, используйте «Скопировать ссылку» и импорт в приложении.",
-        ])
-    lines.append("")
-    lines.append("Если потерялись — нажмите «Назад».")
-    lines.append("Если не открылось — используйте ручное копирование через connect-страницу.")
+        lines.append("2) Нажмите «📋 Скопировать ссылку» и добавьте вручную.")
+    lines.append(APP_UNAVAILABLE_IN_REGION_TEXT)
     return "\n".join(lines)
 
 
 def kb_guest():
     kb = InlineKeyboardBuilder()
-    kb.button(text="📝 Запросить доступ", callback_data="req_access")
-    kb.button(text="🆘 Помощь", callback_data="help")
+    kb.button(text="🟢 Попробовать бесплатно", callback_data="req_access")
+    kb.button(text="💳 Тарифы", callback_data="guest:tariffs")
+    kb.button(text="❓ Как подключиться", callback_data="guest:howto")
+    kb.button(text="🛟 Поддержка", callback_data="help")
     kb.adjust(1)
     return kb.as_markup()
 
 
 def kb_main():
     kb = InlineKeyboardBuilder()
-    kb.button(text="📎 Моя подписка", callback_data="menu_sub")
+    kb.button(text="🔗 Подключить VPN", callback_data="menu_connect")
+    kb.button(text="🔄 Обновить подписку", callback_data="sub_show")
     kb.button(text="💳 Тарифы", callback_data="menu_tariffs")
-    kb.button(text="🔌 Подключиться", callback_data="menu_connect")
-    kb.button(text="📊 Статус", callback_data="status")
-    kb.button(text="🆘 Помощь", callback_data="help")
+    kb.button(text="🛟 Поддержка", callback_data="help")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -1248,10 +1280,10 @@ def kb_submenu():
 
 def kb_connect_os():
     kb = InlineKeyboardBuilder()
-    kb.button(text="🤖 Android", callback_data="connect:os:android")
-    kb.button(text="📱 iOS", callback_data="connect:os:ios")
+    kb.button(text="📱 Android", callback_data="connect:os:android")
+    kb.button(text="🍏 iPhone / iPad", callback_data="connect:os:ios")
     kb.button(text="💻 Windows", callback_data="connect:os:windows")
-    kb.button(text="🍏 macOS", callback_data="connect:os:macos")
+    kb.button(text="🖥 macOS", callback_data="connect:os:macos")
     kb.button(text="🐧 Linux", callback_data="connect:os:linux")
     kb.button(text="🔙 Назад", callback_data="back_main")
     kb.adjust(1)
@@ -1260,9 +1292,18 @@ def kb_connect_os():
 
 def kb_connect_clients(platform: str):
     kb = InlineKeyboardBuilder()
-    kb.button(text="Hiddify", callback_data=f"connect:client:{platform}:hiddify")
-    kb.button(text="V2Ray", callback_data=f"connect:client:{platform}:v2ray")
-    kb.button(text="v2Box", callback_data=f"connect:client:{platform}:v2box")
+    apps = ["hiddify", "v2ray", "v2box"]
+    recommended = RECOMMENDED_APPS.get(platform)
+    if recommended in apps:
+        apps.remove(recommended)
+        apps.insert(0, recommended)
+
+    for app in apps:
+        title = CONNECT_CLIENTS.get(app, app)
+        prefix = "⭐️ " if app == recommended else ""
+        kb.button(text=f"{prefix}{title}", callback_data=f"connect:client:{platform}:{app}")
+
+    kb.button(text="🔄 Выбрать другое приложение", callback_data="menu_connect")
     kb.button(text="🔙 Назад", callback_data="menu_connect")
     kb.adjust(1)
     return kb.as_markup()
@@ -1272,6 +1313,17 @@ def kb_connect_unavailable(platform: str):
     kb = InlineKeyboardBuilder()
     kb.button(text="⬅️ Назад", callback_data=f"connect:clients:{platform}")
     kb.button(text="🏠 В меню", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def kb_smart_skip(platform: str):
+    recommended = RECOMMENDED_APPS.get(platform, "hiddify")
+    app_name = CONNECT_CLIENTS.get(recommended, recommended)
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"🚀 Подключиться через {app_name}", callback_data=f"connect:client:{platform}:{recommended}")
+    kb.button(text="🔄 Выбрать другое приложение", callback_data=f"connect:clients:{platform}")
+    kb.button(text="🔙 Назад", callback_data="menu_connect")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -1553,6 +1605,16 @@ def short_name(u) -> str:
 
 
 def get_display_name(user) -> str:
+    tg_id = getattr(user, "id", None)
+    if tg_id:
+        profile = _get_user_profile(tg_id)
+        first_name = (profile.get("first_name") or "").strip()
+        if first_name:
+            return first_name
+        username = (profile.get("username") or "").strip().lstrip("@")
+        if username:
+            return f"@{username}"
+
     first_name = (getattr(user, "first_name", "") or "").strip()
     if first_name:
         return first_name
@@ -1575,17 +1637,18 @@ def escape_markdown(text: str) -> str:
 # ----------------- handlers -----------------
 @dp.message(CommandStart())
 async def start(message: Message):
+    save_user_profile(message.from_user)
     uid = message.from_user.id
     display_name = get_display_name(message.from_user)
     greeting = (
-        f"👋 Привет, {display_name}! Добро пожаловать в {PROFILE_NAME}.\n\n"
-        f"{PROFILE_NAME} — это VPN, который стабильно работает в России.\n\n"
-        "🎁 7 дней бесплатно — без оплаты и привязки карты\n"
-        "⏱ Подключение — 2 минуты\n"
-        "📱 iPhone, Android, Windows, Mac\n"
-        "💬 Поддержка — прямо здесь, в Telegram\n\n"
-        "Я проведу тебя шаг за шагом и помогу, если что-то не получится.\n\n"
-        "Начнём?"
+        f"Привет, {display_name} 👋\n\n"
+        "🚀 Open-Portal — простой и стабильный VPN\n\n"
+        "• Подключение за 1–2 минуты\n"
+        "• Стабильно работает в РФ\n"
+        "• 7 дней бесплатного теста\n"
+        "• Поддержка 24/7\n\n"
+        "Без лишних настроек.\n"
+        "Выбираете тариф — получаете доступ."
     )
     try:
         await bot.delete_message(message.chat.id, message.message_id)
@@ -1610,6 +1673,7 @@ async def start(message: Message):
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message):
+    save_user_profile(message.from_user)
     try:
         await bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -1628,6 +1692,7 @@ async def cmd_menu(message: Message):
 
 @dp.message(Command("tariffs"))
 async def cmd_tariffs(message: Message):
+    save_user_profile(message.from_user)
     try:
         await bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -1646,6 +1711,7 @@ async def cmd_tariffs(message: Message):
 
 @dp.message(Command("subscription"))
 async def cmd_subscription(message: Message):
+    save_user_profile(message.from_user)
     try:
         await bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -1656,6 +1722,7 @@ async def cmd_subscription(message: Message):
 
 @dp.message(Command("getvpn"))
 async def cmd_getvpn(message: Message):
+    save_user_profile(message.from_user)
     try:
         await bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -1666,6 +1733,7 @@ async def cmd_getvpn(message: Message):
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
+    save_user_profile(message.from_user)
     try:
         await bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -1681,6 +1749,7 @@ async def cmd_help(message: Message):
 
 @dp.callback_query(F.data == "back_main")
 async def back_main(cb: CallbackQuery):
+    save_user_profile(cb.from_user)
     uid = cb.from_user.id
     if not is_allowed(uid):
         await show_screen(cb.message.chat.id, uid, "Сначала получи доступ 👇", kb_guest())
@@ -1691,12 +1760,40 @@ async def back_main(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "help")
 async def help_cb(cb: CallbackQuery):
+    save_user_profile(cb.from_user)
     await show_screen(
         cb.message.chat.id,
         cb.from_user.id,
         f"{get_display_name(cb.from_user)},\n\n{help_text()}",
         kb_main() if is_allowed(cb.from_user.id) else kb_guest(),
     )
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "guest:tariffs")
+async def guest_tariffs(cb: CallbackQuery):
+    text = (
+        "🎁 Бесплатный тест — 7 дней\n\n"
+        "• Полный доступ\n"
+        "• Без привязки карты\n"
+        "• Подходит для РФ\n\n"
+        "Нажмите «🟢 Попробовать бесплатно», чтобы начать."
+    )
+    await show_screen(cb.message.chat.id, cb.from_user.id, text, kb_guest())
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "guest:howto")
+async def guest_howto(cb: CallbackQuery):
+    text = (
+        "Как подключиться:\n\n"
+        "1) Нажмите «🟢 Попробовать бесплатно».\n"
+        "2) Откройте «🔗 Подключить VPN».\n"
+        "3) Выберите устройство и приложение.\n"
+        "4) Нажмите «🚀 Автоподключение».\n\n"
+        "Если что-то не сработает — всегда доступна кнопка «📋 Скопировать ссылку»."
+    )
+    await show_screen(cb.message.chat.id, cb.from_user.id, text, kb_guest())
     await cb.answer()
 
 
@@ -1802,7 +1899,7 @@ async def menu_connect(cb: CallbackQuery):
     if not is_allowed(cb.from_user.id):
         await show_screen(cb.message.chat.id, cb.from_user.id, "Сначала получи доступ 👇", kb_guest())
         return await cb.answer()
-    await show_screen(cb.message.chat.id, cb.from_user.id, "🔌 Выберите ОС:", kb_connect_os())
+    await show_screen(cb.message.chat.id, cb.from_user.id, "На каком устройстве вы хотите подключить VPN?", kb_connect_os())
     await cb.answer()
 
 
@@ -1990,7 +2087,7 @@ async def plan_apply(cb: CallbackQuery):
         await show_screen(
             cb.message.chat.id,
             uid,
-            "🎁 Trial уже использован",
+            f"{get_display_name(cb.from_user)}, вы уже использовали бесплатный тест 🙌\n\nВы можете выбрать платный тариф и продолжить пользоваться сервисом.",
             kb_trial_used(),
         )
         return await cb.answer()
@@ -2046,6 +2143,9 @@ async def plan_apply(cb: CallbackQuery):
         logging.warning("plan: tg_id=%s username=%s code=%s body=%s", uid, resolved, code, text[:200])
         await show_screen(cb.message.chat.id, uid, "⚠️ Не удалось применить тариф. Попробуйте позже.", kb_tariffs())
         return await cb.answer()
+
+    if plan_id == "trial_7d":
+        mark_trial_used(uid)
 
     set_selected_plan(uid, plan_id)
 
@@ -2132,14 +2232,14 @@ async def connect_choose_client(cb: CallbackQuery):
     if platform not in CONNECT_PLATFORMS:
         return await cb.answer("Платформа не поддерживается", show_alert=True)
 
+    app_name = CONNECT_CLIENTS.get(RECOMMENDED_APPS.get(platform, "hiddify"), "Hiddify")
     await show_screen(
         cb.message.chat.id,
         cb.from_user.id,
-        f"🔌 {CONNECT_PLATFORMS[platform]}: выберите клиент:",
-        kb_connect_clients(platform),
+        f"Если у вас уже установлено приложение {app_name},\nвы можете подключиться сразу.",
+        kb_smart_skip(platform),
     )
     await cb.answer()
-
 
 
 
@@ -2160,7 +2260,7 @@ async def connect_back_to_clients(cb: CallbackQuery):
     await show_screen(
         cb.message.chat.id,
         cb.from_user.id,
-        f"🔌 {CONNECT_PLATFORMS[platform]}: выберите клиент:",
+        "Выберите приложение для подключения\n\nВыберите любое доступное в вашем регионе приложение.\nЕсли приложение уже установлено: нажмите на него и затем «Автоподключение».",
         kb_connect_clients(platform),
     )
     await cb.answer()
@@ -2228,7 +2328,7 @@ async def connect_instruction(cb: CallbackQuery):
 
     client_name = CONNECT_CLIENTS[client]
     await cb.answer(
-        f"{client_name}: откройте приложение, добавьте подписку через буфер обмена и подтвердите импорт.",
+        "Если автоподключение не сработало: нажмите «Скопировать ссылку» и добавьте её в приложении вручную.",
         show_alert=True,
     )
 
@@ -2284,7 +2384,7 @@ async def status(cb: CallbackQuery):
         f"📶 Трафик: *{traffic_txt}*\n"
         f"🟣 Последний онлайн: *{fmt_dt(data.get('online_at'))}*\n"
         f"🔁 Подписка обновлена: *{fmt_dt(data.get('sub_updated_at'))}*\n"
-        f"📱 Последний клиент: *{data.get('sub_last_user_agent') or '—'}*\n"
+        f"📱 Последнее приложение: *{data.get('sub_last_user_agent') or '—'}*\n"
         f"🧩 Inbounds: *{inb_line}*\n"
     )
     await cb.message.answer(msg, parse_mode="Markdown")
