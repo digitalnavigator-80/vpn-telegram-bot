@@ -815,9 +815,14 @@ async def yookassa_webhook(request: web.Request):
     return web.Response(status=200, text="ok")
 
 
+async def yookassa_webhook_healthcheck(_: web.Request):
+    return web.Response(status=200, text="ok")
+
+
 async def start_webhook_server():
     app = web.Application()
     app.router.add_post("/yookassa/webhook", yookassa_webhook)
+    app.router.add_get("/yookassa/webhook", yookassa_webhook_healthcheck)
     app.router.add_get("/connect", connect_page_web)
     app.router.add_get("/connect/", connect_page_web)
     runner = web.AppRunner(app)
