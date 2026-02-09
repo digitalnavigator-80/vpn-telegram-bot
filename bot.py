@@ -924,57 +924,51 @@ async def start_webhook_server():
 async def handle_subscription(tg_user, chat_id: int):
     save_user_profile(tg_user)
     uid = tg_user.id
-
-    greeting = profile_greeting(tg_user)
-    trial_used = is_trial_used(uid)
     plan_id = get_selected_plan(uid)
 
     resolved = await resolve_marzban_username(uid, tg_user.username)
     if not resolved:
-        if trial_used:
-            text = f"{greeting}\n\n⛔ Бесплатный тест уже был использован"
-        else:
-            text = f"{greeting}\n\nУ вас нет активной подписки"
-        await show_screen(chat_id, uid, text, kb_my_subscription_inactive(uid))
+        await show_screen(chat_id, uid, "📦 Моя подписка\n\nУ вас нет активной подписки", kb_my_subscription_inactive(uid))
         return
 
     code, payload = await api_get_user(resolved)
     if code != 200:
-        if trial_used:
-            text = f"{greeting}\n\n⛔ Бесплатный тест уже был использован"
-        else:
-            text = f"{greeting}\n\nУ вас нет активной подписки"
-        await show_screen(chat_id, uid, text, kb_my_subscription_inactive(uid))
+        await show_screen(chat_id, uid, "📦 Моя подписка\n\nУ вас нет активной подписки", kb_my_subscription_inactive(uid))
         return
 
     user_data = _parse_json(payload)
     if not isinstance(user_data, dict):
-        await show_screen(chat_id, uid, f"{greeting}\n\nУ вас нет активной подписки", kb_my_subscription_inactive(uid))
+        await show_screen(chat_id, uid, "📦 Моя подписка\n\nУ вас нет активной подписки", kb_my_subscription_inactive(uid))
         return
 
+    now = datetime.now(timezone.utc)
     expire_dt = parse_expire_from_user_json(user_data.get("expire"))
-    has_active = is_active_subscription_user_data(user_data)
+    start_dt = parse_start_from_user_json(user_data)
+    has_active = bool(expire_dt and expire_dt > now)
 
-    if not has_active:
-        if trial_used:
-            text = f"{greeting}\n\n⛔ Бесплатный тест уже был использован"
-        else:
-            text = f"{greeting}\n\nУ вас нет активной подписки"
-        await show_screen(chat_id, uid, text, kb_my_subscription_inactive(uid))
+    if not expire_dt:
+        await show_screen(chat_id, uid, "📦 Моя подписка\n\nУ вас нет активной подписки", kb_my_subscription_inactive(uid))
         return
-
-    full_sub_url = build_full_subscription_url(user_data.get("subscription_url"))
 
     tariff = "Trial" if plan_id == "trial_7d" else "Paid"
-    valid_till = expire_dt.strftime("%d.%m.%Y") if expire_dt else "Без срока"
-    text_lines = [
-        "Статус: 🟢 Активна",
-        f"Тариф: {tariff}",
-        f"Действует до: {valid_till}",
-        "",
-        "Ваша ссылка на подписку:",
-        full_sub_url or "Нет активной подписки",
-    ]
+    if has_active:
+        text_lines = [
+            "📦 Моя подписка",
+            "",
+            f"Тариф: {tariff}",
+            "Статус: Активна",
+            f"Дата начала: {format_display_datetime(start_dt)}",
+            f"Дата окончания: {format_display_datetime(expire_dt)}",
+            f"Осталось: {format_time_left(expire_dt, now)}",
+        ]
+    else:
+        text_lines = [
+            "📦 Моя подписка",
+            "",
+            f"Тариф: {tariff}",
+            "Статус: Истекла",
+            f"Дата окончания: {format_display_datetime(expire_dt)}",
+        ]
 
     await show_screen(chat_id, uid, "\n".join(text_lines), kb_my_subscription_active())
 
@@ -1165,20 +1159,53 @@ def _expire_to_api(dt: datetime) -> str:
 
 
 def parse_expire_from_user_json(expire_raw) -> datetime | None:
-    if expire_raw in (None, "null"):
+    return parse_datetime_from_user_json(expire_raw)
+
+
+def parse_start_from_user_json(user_data: dict) -> datetime | None:
+    if not isinstance(user_data, dict):
         return None
-    if isinstance(expire_raw, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(expire_raw), tz=timezone.utc)
-        except Exception:
-            return None
-    if isinstance(expire_raw, str):
-        try:
-            val = expire_raw.replace("Z", "+00:00")
-            return datetime.fromisoformat(val)
-        except Exception:
-            return None
+
+    for key in ("created_at", "start_date", "subscription_start", "activated_at"):
+        raw_value = user_data.get(key)
+        parsed = parse_datetime_from_user_json(raw_value)
+        if parsed:
+            return parsed
     return None
+
+
+def parse_datetime_from_user_json(value) -> datetime | None:
+    if value in (None, "null"):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        elif isinstance(value, str):
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            return None
+    except Exception:
+        return None
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def format_display_datetime(value: datetime | None) -> str:
+    if not value:
+        return "—"
+    return value.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+
+
+def format_time_left(expire_dt: datetime, now: datetime) -> str:
+    delta = expire_dt - now
+    seconds_left = max(0, int(delta.total_seconds()))
+    if seconds_left >= 24 * 3600:
+        days_left = seconds_left // (24 * 3600)
+        return f"{days_left} дн."
+    hours_left = max(1, seconds_left // 3600)
+    return f"{hours_left} ч."
 
 
 def format_expire_for_api(dt: datetime) -> str:
