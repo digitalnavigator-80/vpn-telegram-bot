@@ -919,11 +919,14 @@ if (mode === 'subcopy') {{
 }}
 
 function openApp() {{
-  if (!schemeLink) {{
-    status.innerHTML = '<small>Ссылка недоступна</small>';
-    return;
-  }}
-  status.innerHTML = '<small>✅ Открываем приложение…</small>';
+  if (!schemeLink) return;
+  const tg = window.Telegram && window.Telegram.WebApp;
+  try {{
+    if (tg && typeof tg.openLink === 'function') {{
+      tg.openLink(schemeLink);
+      return;
+    }}
+  }} catch (e) {{}}
   window.location.href = schemeLink;
 }}
 
@@ -1362,20 +1365,20 @@ def format_subscription(user_json: dict, usage_json: dict | None, display_name: 
 
 def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None, bool]:
     enc = urllib.parse.quote(sub_url, safe="")
+    name_enc = urllib.parse.quote(PROFILE_NAME, safe="")
     if client == "hiddify":
-        profile_enc = urllib.parse.quote(PROFILE_NAME, safe="")
-        return f"hiddify://install-config/?url={enc}#{profile_enc}", False
+        return f"hiddify://install-sub?url={enc}#{name_enc}", False
 
     if client == "v2ray":
         if platform == "android":
-            return f"v2raytun://import/{enc}", False
+            return f"v2rayng://install-sub?url={enc}&name={name_enc}", False
         if platform == "ios":
             return f"v2box://install-config?url={enc}&name={PROFILE_NAME}", False
         return None, False
 
     if client == "v2box":
         if platform in ("android", "ios"):
-            return f"v2box://install-config?url={enc}&name={PROFILE_NAME}", False
+            return f"v2box://install-sub?url={enc}&name={name_enc}", False
         return None, False
 
     return None, False
