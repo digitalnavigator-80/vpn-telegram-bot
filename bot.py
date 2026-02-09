@@ -1421,6 +1421,7 @@ def kb_guest():
     kb.button(text="💳 Тарифы", callback_data="guest:tariffs")
     kb.button(text="❓ Как подключиться", callback_data="guest:howto")
     kb.button(text="🛟 Поддержка", callback_data="help")
+    kb.button(text="⬅️ Назад", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -1573,6 +1574,7 @@ def kb_tariffs(tg_id: int):
 def kb_subscription_actions():
     kb = InlineKeyboardBuilder()
     kb.button(text="🔁 Продлить / сменить план", callback_data="menu_tariffs")
+    kb.button(text="⬅️ Назад", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -1582,6 +1584,7 @@ def kb_trial_used():
     kb.button(text="🧪 Тестовый доступ (1 день) — 10 ₽", callback_data="pay:choose:test1d")
     kb.button(text="📅 1 месяц", callback_data="pay:choose:month")
     kb.button(text=f"💎 1 год — {YEAR_PRICE_RUB}₽ (-15%)", callback_data="pay:choose:year")
+    kb.button(text="⬅️ Назад", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -1589,6 +1592,7 @@ def kb_trial_used():
 def kb_plan_selected():
     kb = InlineKeyboardBuilder()
     kb.button(text="📊 Моя подписка", callback_data="sub_show")
+    kb.button(text="⬅️ Назад", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -1597,6 +1601,7 @@ def kb_plan_selected():
 def kb_trial_only():
     kb = InlineKeyboardBuilder()
     kb.button(text="🎁 Trial", callback_data="plan:trial_7d")
+    kb.button(text="⬅️ Назад", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -1627,6 +1632,7 @@ def kb_payment_choose():
     kb.button(text="🧪 Тестовый доступ (1 день) — 10 ₽", callback_data="pay:choose:test1d")
     kb.button(text="📅 1 месяц", callback_data="pay:choose:month")
     kb.button(text="💎 1 год", callback_data="pay:choose:year")
+    kb.button(text="⬅️ Назад", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -2025,6 +2031,7 @@ async def req_access(cb: CallbackQuery):
     )
     kb = InlineKeyboardBuilder()
     kb.button(text="▶️ Начать тест", callback_data="plan:trial_7d")
+    kb.button(text="⬅️ Назад", callback_data="back_main")
     kb.button(text="🏠 В главное меню", callback_data="back_main")
     kb.adjust(1)
     await show_screen(cb.message.chat.id, cb.from_user.id, text, kb.as_markup())
