@@ -1295,7 +1295,7 @@ def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None
 
 
 def connect_page_url(platform: str, client: str, sub_url: str) -> str:
-    base = f"{CONNECT_PAGE_BASE_URL}/connect"
+    base = f"{CONNECT_PAGE_BASE_URL}/connect/"
     params = {
         "client": client,
         "platform": platform,
