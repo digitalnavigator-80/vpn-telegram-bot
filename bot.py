@@ -747,13 +747,13 @@ async def activate_paid_plan(payment_id: str, status: str, source: str):
 
 
 async def connect_page_web(request: web.Request):
-    sub_url = (request.query.get("sub") or "").strip()
+    sub_url_full = build_full_subscription_url(request.query.get("sub"))
     platform = (request.query.get("platform") or "").strip()
     client = (request.query.get("client") or "").strip()
     mode = (request.query.get("mode") or "").strip().lower()
     bot_username = (request.query.get("bot") or BOT_PUBLIC_USERNAME or "").strip().lstrip("@")
 
-    deep_link, _ = build_sub_link(sub_url, platform, client)
+    deep_link, _ = build_sub_link(sub_url_full or "", platform, client)
 
     html = f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -797,7 +797,7 @@ small {{ color:#94a3b8; }}
 </div>
 <script>
 const schemeLink = {json.dumps(deep_link or "")};
-const subUrl = {json.dumps(sub_url)};
+const subUrlFull = {json.dumps(sub_url_full or "")};
 const mode = {json.dumps(mode)};
 const botUsername = {json.dumps(bot_username)};
 const status = document.getElementById('status');
@@ -862,7 +862,14 @@ async function copyToClipboard(text) {{
   }}
 }}
 
-subEl.textContent = shortenLink(subUrl);
+subEl.textContent = subUrlFull ? shortenLink(subUrlFull) : 'Нет активной подписки';
+subEl.style.textDecoration = subUrlFull ? 'underline' : 'none';
+subEl.style.pointerEvents = subUrlFull ? 'auto' : 'none';
+
+if (!subUrlFull) {{
+  copyButton.disabled = true;
+  openButton.disabled = mode === 'subcopy';
+}}
 
 if (mode === 'copy' || mode === 'subcopy') {{
   titleEl.textContent = mode === 'subcopy' ? '🔗 Ссылка на подписку' : '📋 Скопируйте ссылку';
@@ -879,19 +886,19 @@ function openApp() {{
 
 openButton.onclick = () => {{
   if (mode === 'subcopy') {{
-    copyToClipboard(subUrl);
+    copyToClipboard(subUrlFull);
     return;
   }}
   openApp();
 }};
 
 copyButton.onclick = async () => {{
-  await copyToClipboard(subUrl);
+  await copyToClipboard(subUrlFull);
 }};
 
 subEl.onclick = async () => {{
   if (mode === 'subcopy') {{
-    await copyToClipboard(subUrl);
+    await copyToClipboard(subUrlFull);
   }}
 }};
 
@@ -911,7 +918,9 @@ backButton.onclick = () => {{
   window.history.back();
 }};
 
-if (mode === 'copy') {{
+if (!subUrlFull) {{
+  status.innerHTML = '<small>Нет активной подписки</small>';
+}} else if (mode === 'copy') {{
   status.innerHTML = '<small>Нажмите «Скопировать ссылку» и выполните шаги выше.</small>';
 }} else if (mode === 'subcopy') {{
   openButton.textContent = '📎 Скопировать ссылку';
@@ -1006,14 +1015,7 @@ async def handle_subscription(tg_user, chat_id: int):
         await show_screen(chat_id, uid, text, kb_my_subscription_inactive(uid))
         return
 
-    full_sub_url = None
-    sub_path = (user_data.get("subscription_url") or "").strip()
-    if sub_path and PUBLIC_BASE_URL:
-        if sub_path.startswith("/"):
-            full_sub_url = f"{PUBLIC_BASE_URL}{sub_path}"
-        else:
-            full_sub_url = f"{PUBLIC_BASE_URL}/{sub_path}"
-
+    full_sub_url = build_full_subscription_url(user_data.get("subscription_url"))
     display_sub_url = shorten_link(full_sub_url) if full_sub_url else None
 
     tariff = "Trial" if plan_id == "trial_7d" else "Paid"
@@ -1355,6 +1357,34 @@ def subscription_copy_page_url(sub_url: str) -> str:
     return f"{base}?{urllib.parse.urlencode(params)}"
 
 
+def build_full_subscription_url(raw_subscription: str | None) -> str | None:
+    """Return canonical public subscription URL in /sub/<token> format."""
+    if not PUBLIC_BASE_URL:
+        return None
+    raw_value = (raw_subscription or "").strip()
+    if not raw_value:
+        return None
+
+    parsed = urllib.parse.urlparse(raw_value)
+    candidate_path = (parsed.path or "").strip("/") if parsed.scheme else raw_value.strip("/")
+    if not candidate_path:
+        return None
+
+    parts = [part for part in candidate_path.split("/") if part]
+    token = ""
+    if len(parts) >= 2 and parts[-2] == "sub":
+        token = parts[-1]
+    elif parts and parts[0] == "sub" and len(parts) >= 2:
+        token = parts[1]
+    elif len(parts) == 1:
+        token = parts[0]
+
+    token = token.strip()
+    if not token:
+        return None
+    return f"{PUBLIC_BASE_URL}/sub/{token}"
+
+
 def shorten_link(full_url: str, head: int = 24, tail: int = 8) -> str:
     if not full_url:
         return ""
@@ -1687,17 +1717,10 @@ async def get_user_data(username: str) -> dict | None:
 
 
 async def get_subscription_link(username: str) -> str | None:
-    if not PUBLIC_BASE_URL:
-        return None
     data = await get_user_data(username)
     if not data:
         return None
-    sub_path = data.get("subscription_url")
-    if not sub_path:
-        return None
-    if sub_path.startswith("/"):
-        return f"{PUBLIC_BASE_URL}{sub_path}"
-    return f"{PUBLIC_BASE_URL}/{sub_path}"
+    return build_full_subscription_url(data.get("subscription_url"))
 
 
 async def revoke_subscription(username: str) -> bool:
