@@ -747,11 +747,29 @@ async def activate_paid_plan(payment_id: str, status: str, source: str):
 
 
 async def connect_page_web(request: web.Request):
-    sub_url_full = build_full_subscription_url(request.query.get("sub"))
+    raw_sub = request.query.get("sub")
+    sub_url_full = build_full_subscription_url(raw_sub)
     platform = (request.query.get("platform") or "").strip()
     client = (request.query.get("client") or "").strip()
     mode = (request.query.get("mode") or "").strip().lower()
     bot_username = (request.query.get("bot") or BOT_PUBLIC_USERNAME or "").strip().lstrip("@")
+
+    raw_sub_text = (raw_sub or "").strip()
+    invalid_short = "..." in raw_sub_text
+    is_full_url = sub_url_full.startswith(("http://", "https://")) if sub_url_full else False
+    safe_sub_preview = ""
+    if sub_url_full:
+        safe_sub_preview = f"{sub_url_full[:4]}...{sub_url_full[-4:]}" if len(sub_url_full) > 8 else sub_url_full
+    logging.info(
+        "connect_page_web: platform=%s client=%s raw_sub_len=%s normalized_sub_len=%s is_full_url=%s invalid_short=%s sub_preview=%s",
+        platform,
+        client,
+        len(raw_sub_text),
+        len(sub_url_full),
+        is_full_url,
+        invalid_short,
+        safe_sub_preview,
+    )
 
     deep_link, _ = build_sub_link(sub_url_full or "", platform, client)
 
@@ -775,7 +793,7 @@ small {{ color:#94a3b8; }}
 </style></head>
 <body><div class="card">
 <h3>🔌 Подключаем вас…</h3>
-<p id="connect-muted" class="muted">Мы попытались открыть приложение автоматически.<br>Если не получилось — выполните простые шаги ниже.</p>
+<p id="connect-muted" class="muted">Нажмите «⚡ Открыть приложение».<br>Если не получится — выполните простые шаги ниже.</p>
 <div id="connect-notice" class="notice">
 <strong>❗ Если подключение не произошло автоматически — это нормально</strong>
 <ol class="steps">
@@ -901,7 +919,11 @@ if (mode === 'subcopy') {{
 }}
 
 function openApp() {{
-  if (!schemeLink) return;
+  if (!schemeLink) {{
+    status.innerHTML = '<small>Ссылка недоступна</small>';
+    return;
+  }}
+  status.innerHTML = '<small>✅ Открываем приложение…</small>';
   window.location.href = schemeLink;
 }}
 
@@ -940,17 +962,14 @@ backButton.onclick = () => {{
 }};
 
 if (!subUrlFull) {{
-  status.innerHTML = '<small>Нет активной подписки</small>';
+  status.innerHTML = '<small>Ссылка недоступна</small>';
 }} else if (mode === 'copy') {{
   status.innerHTML = '<small>Нажмите «Скопировать ссылку» и выполните шаги выше.</small>';
 }} else if (mode === 'subcopy') {{
   status.innerHTML = '<small>Копируем ссылку…</small>';
   copyToClipboard(subUrlFull);
 }} else {{
-  openApp();
-  setTimeout(() => {{
-    status.innerHTML = '<small>Если приложение не открылось, выполните шаги выше.</small>';
-  }}, 1500);
+  status.innerHTML = '<small>Нажмите «⚡ Открыть приложение», чтобы продолжить.</small>';
 }}
 </script></body></html>"""
     return web.Response(text=html, content_type="text/html")
@@ -1367,7 +1386,7 @@ def connect_page_url(platform: str, client: str, sub_url: str) -> str:
     params = {
         "client": client,
         "platform": platform,
-        "sub": sub_url,
+        "sub": extract_sub_token(sub_url),
     }
     if BOT_PUBLIC_USERNAME:
         params["bot"] = BOT_PUBLIC_USERNAME
@@ -1379,32 +1398,52 @@ def connect_page_copy_url(platform: str, client: str, sub_url: str) -> str:
     return f"{connect_page_url(platform, client, sub_url)}&mode=copy"
 
 
-def build_full_subscription_url(raw_subscription: str | None) -> str | None:
-    """Return canonical public subscription URL in /sub/<token> format."""
+def extract_sub_token(full_url: str) -> str:
+    raw_value = (full_url or "").strip()
+    if not raw_value:
+        return ""
+    if "/sub/" not in raw_value:
+        return raw_value
+
+    token = raw_value.split("/sub/", 1)[1]
+    token = token.split("?", 1)[0].split("#", 1)[0].split("/", 1)[0]
+    return token.strip()
+
+
+def _normalize_subscription_value(raw_value: str) -> str:
+    value = (raw_value or "").strip()
+    if not value or "..." in value:
+        return ""
+    if value.startswith(("http://", "https://")):
+        return value
     if not PUBLIC_BASE_URL:
-        return None
+        return ""
+
+    normalized = value.lstrip("/")
+    if normalized.startswith("sub/"):
+        token = normalized[4:]
+    else:
+        token = normalized
+    token = token.strip().strip("/")
+    if not token:
+        return ""
+    return f"{PUBLIC_BASE_URL}/sub/{token}"
+
+
+def build_full_subscription_url(raw_subscription: str | None) -> str:
+    """Return canonical public subscription URL in /sub/<token> format."""
     raw_value = (raw_subscription or "").strip()
     if not raw_value:
-        return None
+        return ""
 
-    parsed = urllib.parse.urlparse(raw_value)
-    candidate_path = (parsed.path or "").strip("/") if parsed.scheme else raw_value.strip("/")
-    if not candidate_path:
-        return None
+    candidate = raw_value
+    looks_encoded = any(part in raw_value.lower() for part in ("%2f", "%3a"))
+    if looks_encoded and not raw_value.startswith(("http://", "https://")):
+        decoded = urllib.parse.unquote(raw_value)
+        if decoded != raw_value:
+            candidate = decoded
 
-    parts = [part for part in candidate_path.split("/") if part]
-    token = ""
-    if len(parts) >= 2 and parts[-2] == "sub":
-        token = parts[-1]
-    elif parts and parts[0] == "sub" and len(parts) >= 2:
-        token = parts[1]
-    elif len(parts) == 1:
-        token = parts[0]
-
-    token = token.strip()
-    if not token:
-        return None
-    return f"{PUBLIC_BASE_URL}/sub/{token}"
+    return _normalize_subscription_value(candidate)
 
 
 def shorten_link(full_url: str, head: int = 24, tail: int = 8) -> str:
