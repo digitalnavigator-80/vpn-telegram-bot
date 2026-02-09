@@ -775,8 +775,8 @@ small {{ color:#94a3b8; }}
 </style></head>
 <body><div class="card">
 <h3>🔌 Подключаем вас…</h3>
-<p class="muted">Мы попытались открыть приложение автоматически.<br>Если не получилось — выполните простые шаги ниже.</p>
-<div class="notice">
+<p id="connect-muted" class="muted">Мы попытались открыть приложение автоматически.<br>Если не получилось — выполните простые шаги ниже.</p>
+<div id="connect-notice" class="notice">
 <strong>❗ Если подключение не произошло автоматически — это нормально</strong>
 <ol class="steps">
 <li>1. Нажмите кнопку «Скопировать ссылку»</li>
@@ -787,7 +787,7 @@ small {{ color:#94a3b8; }}
 </ol>
 <small>Это нужно сделать только один раз</small>
 </div>
-<div class="actions">
+<div id="connect-actions" class="actions">
 <button id="open" class="primary">⚡ Открыть приложение</button>
 <button id="copy" class="secondary">📋 Скопировать ссылку</button>
 <button id="back" class="secondary">⬅️ Вернуться в бот</button>
@@ -815,17 +815,27 @@ function shortenLink(fullUrl, head = 24, tail = 8) {{
 
 function showCopyResult(ok) {{
   const tg = window.Telegram && window.Telegram.WebApp;
+  const isSubCopyMode = mode === 'subcopy';
+  const successMessage = isSubCopyMode ? 'Скопировано' : 'Ссылка скопирована в буфер обмена';
   if (tg && typeof tg.showPopup === 'function') {{
     tg.showPopup({{
       title: ok ? 'Готово' : 'Ошибка',
-      message: ok ? 'Ссылка скопирована в буфер обмена' : 'Не удалось скопировать ссылку, попробуйте ещё раз',
+      message: ok ? successMessage : 'Не удалось скопировать ссылку, попробуйте ещё раз',
       buttons: [{{ type: 'ok' }}],
+    }}, () => {{
+      if (ok && isSubCopyMode && typeof tg.close === 'function') {{
+        tg.close();
+      }}
     }});
     return;
   }}
   status.innerHTML = ok
-    ? '<small>✅ Ссылка скопирована в буфер обмена</small>'
+    ? `<small>✅ ${{successMessage}}</small>`
     : '<small>⚠️ Не удалось скопировать ссылку, попробуйте ещё раз</small>';
+
+  if (ok && isSubCopyMode && tg && typeof tg.close === 'function') {{
+    setTimeout(() => tg.close(), 500);
+  }}
 }}
 
 async function copyToClipboard(text) {{
@@ -879,6 +889,17 @@ if (mode === 'copy' || mode === 'subcopy') {{
   openButton.classList.add('secondary');
 }}
 
+if (mode === 'subcopy') {{
+  const mutedEl = document.getElementById('connect-muted');
+  const noticeEl = document.getElementById('connect-notice');
+  const actionsEl = document.getElementById('connect-actions');
+  if (mutedEl) mutedEl.style.display = 'none';
+  if (noticeEl) noticeEl.style.display = 'none';
+  if (actionsEl) actionsEl.style.display = 'none';
+  subEl.style.display = 'none';
+  titleEl.textContent = '📋 Копирование ссылки';
+}}
+
 function openApp() {{
   if (!schemeLink) return;
   window.location.href = schemeLink;
@@ -923,9 +944,8 @@ if (!subUrlFull) {{
 }} else if (mode === 'copy') {{
   status.innerHTML = '<small>Нажмите «Скопировать ссылку» и выполните шаги выше.</small>';
 }} else if (mode === 'subcopy') {{
-  openButton.textContent = '📎 Скопировать ссылку';
-  copyButton.textContent = '📋 Скопировать';
-  status.innerHTML = '<small>Нажмите на ссылку или кнопку, чтобы скопировать полный URL подписки.</small>';
+  status.innerHTML = '<small>Копируем ссылку…</small>';
+  copyToClipboard(subUrlFull);
 }} else {{
   openApp();
   setTimeout(() => {{
@@ -1467,7 +1487,7 @@ async def kb_main_for_user(tg_id: int, tg_username: str | None):
 def kb_my_subscription_active(sub_url: str | None = None):
     kb = InlineKeyboardBuilder()
     if sub_url:
-        kb.button(text="📋 Скопировать ссылку", callback_data="sub_copy")
+        kb.button(text="📋 Скопировать ссылку", web_app=WebAppInfo(url=subscription_copy_page_url(sub_url)))
     kb.button(text="🔗 Подключить VPN", callback_data="menu_connect")
     kb.button(text="🔄 Обновить подписку", callback_data="menu_tariffs")
     kb.button(text="🛟 Поддержка", callback_data="help")
