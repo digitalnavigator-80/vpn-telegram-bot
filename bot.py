@@ -559,11 +559,12 @@ async def show_screen(chat_id: int, tg_id: int, text: str, keyboard):
                 message_id=msg_id,
                 text=text,
                 reply_markup=keyboard,
+                parse_mode="HTML",
             )
             return
         except Exception as exc:
             logging.info("show_screen edit failed: tg_id=%s error=%s", tg_id, exc)
-    msg = await bot.send_message(chat_id, text, reply_markup=keyboard)
+    msg = await bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
     LAST_SCREEN_MESSAGE_ID[tg_id] = msg.message_id
 
 
@@ -861,7 +862,7 @@ async function copyToClipboard(text) {{
   }}
 }}
 
-subEl.textContent = mode === 'subcopy' ? shortenLink(subUrl) : (subUrl || 'Ссылка недоступна');
+subEl.textContent = shortenLink(subUrl);
 
 if (mode === 'copy' || mode === 'subcopy') {{
   titleEl.textContent = mode === 'subcopy' ? '🔗 Ссылка на подписку' : '📋 Скопируйте ссылку';
@@ -1005,13 +1006,15 @@ async def handle_subscription(tg_user, chat_id: int):
         await show_screen(chat_id, uid, text, kb_my_subscription_inactive(uid))
         return
 
-    sub_link = None
+    full_sub_url = None
     sub_path = (user_data.get("subscription_url") or "").strip()
     if sub_path and PUBLIC_BASE_URL:
         if sub_path.startswith("/"):
-            sub_link = f"{PUBLIC_BASE_URL}{sub_path}"
+            full_sub_url = f"{PUBLIC_BASE_URL}{sub_path}"
         else:
-            sub_link = f"{PUBLIC_BASE_URL}/{sub_path}"
+            full_sub_url = f"{PUBLIC_BASE_URL}/{sub_path}"
+
+    display_sub_url = shorten_link(full_sub_url) if full_sub_url else None
 
     tariff = "Trial" if plan_id == "trial_7d" else "Paid"
     valid_till = expire_dt.strftime("%d.%m.%Y") if expire_dt else "Без срока"
@@ -1024,13 +1027,13 @@ async def handle_subscription(tg_user, chat_id: int):
         "",
         "🔗 Ссылка на подписку",
     ]
-    if sub_link:
-        text_lines.append(shorten_link(sub_link))
+    if full_sub_url:
+        text_lines.append(f"<code>{display_sub_url}</code>")
         text_lines.append("Нажмите на кнопку ниже, чтобы скопировать полную ссылку.")
     else:
         text_lines.append("Нет активной подписки")
 
-    await show_screen(chat_id, uid, "\n".join(text_lines), kb_my_subscription_active(sub_link))
+    await show_screen(chat_id, uid, "\n".join(text_lines), kb_my_subscription_active(full_sub_url))
 
 
 async def api_get_user(username: str):
