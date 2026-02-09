@@ -1367,7 +1367,7 @@ def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None
     enc = urllib.parse.quote(sub_url, safe="")
     name_enc = urllib.parse.quote(PROFILE_NAME, safe="")
     if client == "hiddify":
-        return f"hiddify://install-sub?url={enc}#{name_enc}", False
+        return f"hiddify://install-config/?url={enc}#{name_enc}", False
 
     if client == "v2ray":
         if platform == "android":
@@ -1378,7 +1378,7 @@ def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None
 
     if client == "v2box":
         if platform in ("android", "ios"):
-            return f"v2box://install-sub?url={enc}&name={name_enc}", False
+            return f"v2box://install-config?url={enc}&name={PROFILE_NAME}", False
         return None, False
 
     return None, False
