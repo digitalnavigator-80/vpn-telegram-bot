@@ -195,7 +195,7 @@ CONNECT_PLATFORMS = {
 CONNECT_CLIENTS = {
     "hiddify": "Hiddify",
     "v2ray": "V2Ray",
-    "v2box": "v2Box",
+    "v2box": "V2Box",
 }
 
 RECOMMENDED_APPS = {
@@ -241,9 +241,12 @@ INSTALL_LINKS = {
             "alt": "https://play.google.com/store/search?q=v2Box&c=apps",
         },
         "ios": {
-            "store": None,
+            "store": "https://apps.apple.com/app/id6446814690",
             "alt": "https://apps.apple.com/us/search?term=v2box",
         },
+        "windows": {"store": None, "alt": "https://apps.microsoft.com/search?query=v2box"},
+        "macos": {"store": None, "alt": "https://apps.apple.com/us/search?term=v2box"},
+        "linux": {"store": None, "alt": "https://github.com"},
     },
 }
 
@@ -272,6 +275,20 @@ def normalize_connect_keys(platform: str, client: str) -> tuple[str, str]:
     normalized_platform = PLATFORM_ALIASES.get(normalized_platform, normalized_platform)
     normalized_client = CLIENT_ALIASES.get(normalized_client, normalized_client)
     return normalized_platform, normalized_client
+
+
+def subscription_log_preview(sub_url: str) -> str:
+    if not sub_url:
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(sub_url)
+    except Exception:
+        return ""
+    host = (parsed.hostname or "").strip()
+    path = (parsed.path or "").strip()
+    if len(path) > 16:
+        path = f"{path[:16]}..."
+    return f"{host}{path}"
 
 # ----------------- helpers: storage -----------------
 def _ensure_data_dir() -> None:
@@ -748,233 +765,124 @@ async def activate_paid_plan(payment_id: str, status: str, source: str):
 
 async def connect_page_web(request: web.Request):
     raw_sub = request.query.get("sub")
-    sub_url_full = build_full_subscription_url(raw_sub)
-    platform = (request.query.get("platform") or "").strip()
-    client = (request.query.get("client") or "").strip()
-    mode = (request.query.get("mode") or "").strip().lower()
+    raw_platform = request.query.get("platform") or ""
+    raw_client = request.query.get("client") or ""
     bot_username = (request.query.get("bot") or BOT_PUBLIC_USERNAME or "").strip().lstrip("@")
 
-    raw_sub_text = (raw_sub or "").strip()
-    invalid_short = "..." in raw_sub_text
-    is_full_url = sub_url_full.startswith(("http://", "https://")) if sub_url_full else False
-    safe_sub_preview = ""
-    if sub_url_full:
-        safe_sub_preview = f"{sub_url_full[:4]}...{sub_url_full[-4:]}" if len(sub_url_full) > 8 else sub_url_full
+    platform, client = normalize_connect_keys(raw_platform, raw_client)
+    sub_url = build_full_subscription_url(raw_sub)
+
+    is_valid_sub = bool(sub_url and sub_url.startswith("https://"))
+    scheme_link = ""
+    guided_flow = True
+    if is_valid_sub:
+        deep_link, is_guided = build_sub_link(sub_url, platform, client)
+        scheme_link = deep_link or ""
+        guided_flow = is_guided or not bool(scheme_link)
+
+    install_meta = INSTALL_LINKS.get(client, {}).get(platform, {})
+    store_link = install_meta.get("store") if isinstance(install_meta, dict) else None
+
     logging.info(
-        "connect_page_web: platform=%s client=%s raw_sub_len=%s normalized_sub_len=%s is_full_url=%s invalid_short=%s sub_preview=%s",
-        platform,
+        "connect_page_web: client=%s platform=%s mode=%s sub=%s",
         client,
-        len(raw_sub_text),
-        len(sub_url_full),
-        is_full_url,
-        invalid_short,
-        safe_sub_preview,
+        platform,
+        "guided" if guided_flow or not is_valid_sub else "scheme",
+        subscription_log_preview(sub_url),
     )
 
-    deep_link, _ = build_sub_link(sub_url_full or "", platform, client)
+    back_link = f"https://t.me/{bot_username}" if bot_username else "https://t.me"
+
+    if not is_valid_sub:
+        html = f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenPortal — Connect</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; padding: 16px; background:#0f172a; color:#e2e8f0; }}
+.card {{ background:#1e293b; border-radius:12px; padding:16px; max-width:560px; margin: 0 auto; }}
+a.btn {{ display:block; text-align:center; margin-top:12px; text-decoration:none; padding:12px; border-radius:10px; color:white; background:#334155; }}
+</style></head><body><div class="card">
+<h3>⚠️ Невалидная ссылка подписки</h3>
+<p>Параметр <code>sub</code> отсутствует или не является HTTPS-ссылкой.</p>
+<a class="btn" href="{back_link}">⬅️ Назад в бот</a>
+</div></body></html>"""
+        return web.Response(text=html, content_type="text/html")
 
     html = f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenPortal — Connect</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; padding: 16px; background:#0f172a; color:#e2e8f0; }}
-.card {{ background:#1e293b; border-radius:12px; padding:16px; }}
+.card {{ background:#1e293b; border-radius:12px; padding:16px; max-width:560px; margin:0 auto; }}
 .actions {{ display:grid; gap:10px; margin-top:14px; }}
-button {{ width:100%; padding:12px; border:0; border-radius:10px; color:white; font-size:16px; cursor:pointer; }}
+a.btn, button {{ width:100%; box-sizing:border-box; display:block; text-align:center; text-decoration:none; padding:12px; border:0; border-radius:10px; color:white; font-size:16px; cursor:pointer; }}
 .primary {{ background:#2563eb; }}
 .secondary {{ background:#334155; }}
 .muted {{ font-size:14px; color:#94a3b8; }}
 .notice {{ background:#0b1220; border-radius:10px; padding:12px; margin-top:12px; }}
-.steps {{ margin:10px 0 0 0; padding-left:18px; line-height:1.5; }}
-.steps li {{ margin-bottom:8px; }}
-pre {{ white-space:pre-wrap; word-break:break-all; background:#0b1220; padding:12px; border-radius:8px; margin-top:12px; cursor:pointer; }}
-small {{ color:#94a3b8; }}
+.hidden {{ display:none; }}
 </style></head>
 <body><div class="card">
-<h3>🔌 Подключаем вас…</h3>
-<p id="connect-muted" class="muted">Нажмите «⚡ Открыть приложение».<br>Если не получится — выполните простые шаги ниже.</p>
-<div id="connect-notice" class="notice">
-<strong>❗ Если подключение не произошло автоматически — это нормально</strong>
-<ol class="steps">
-<li>1. Нажмите кнопку «Скопировать ссылку»</li>
-<li>2. Откройте приложение</li>
-<li>3. Нажмите кнопку «+»</li>
-<li>4. Выберите пункт «Вставить из буфера»</li>
-<li>5. Подтвердите добавление</li>
-</ol>
-<small>Это нужно сделать только один раз</small>
+<h3 id="title">🔌 Подключение OpenPortal</h3>
+<p id="muted" class="muted"></p>
+<div id="guided" class="notice hidden">
+  <strong>Ручное подключение</strong>
+  <ol>
+    <li>Откройте приложение клиента.</li>
+    <li>Выберите добавление подписки (Subscription).</li>
+    <li>Вставьте ссылку и подтвердите импорт.</li>
+  </ol>
 </div>
-<div id="connect-actions" class="actions">
-<button id="open" class="primary">⚡ Открыть приложение</button>
-<button id="copy" class="secondary">📋 Скопировать ссылку</button>
-<button id="back" class="secondary">⬅️ Вернуться в бот</button>
+<div id="fallback" class="notice hidden">Если не открылось — установите приложение и повторите.</div>
+<div class="actions">
+  <a id="open" class="btn primary" href="#">⚡ Открыть ещё раз</a>
+  <button id="copy" class="secondary">📋 Скопировать ссылку подписки</button>
+  <a id="store" class="btn secondary hidden" href="#" target="_blank">📥 Установить из магазина</a>
+  <a id="back" class="btn secondary" href="{back_link}">⬅️ Назад в Telegram</a>
 </div>
-<pre id="sub"></pre>
-<p id="status"><small></small></p>
+<p id="status" class="muted"></p>
 </div>
 <script>
-const schemeLink = {json.dumps(deep_link or "")};
-const subUrlFull = {json.dumps(sub_url_full or "")};
-const mode = {json.dumps(mode)};
-const botUsername = {json.dumps(bot_username)};
-const status = document.getElementById('status');
-const titleEl = document.querySelector('h3');
-const openButton = document.getElementById('open');
-const copyButton = document.getElementById('copy');
-const backButton = document.getElementById('back');
-const subEl = document.getElementById('sub');
+const schemeLink = {json.dumps(scheme_link)};
+const guidedFlow = {json.dumps(guided_flow)};
+const subUrl = {json.dumps(sub_url)};
+const storeLink = {json.dumps(store_link or "")};
+const titleEl = document.getElementById('title');
+const mutedEl = document.getElementById('muted');
+const guidedEl = document.getElementById('guided');
+const fallbackEl = document.getElementById('fallback');
+const openEl = document.getElementById('open');
+const copyEl = document.getElementById('copy');
+const storeEl = document.getElementById('store');
+const statusEl = document.getElementById('status');
 
-function shortenLink(fullUrl, head = 24, tail = 8) {{
-  if (!fullUrl) return 'Ссылка недоступна';
-  if (fullUrl.length <= head + tail + 3) return fullUrl;
-  return `${{fullUrl.slice(0, head)}}...${{fullUrl.slice(-tail)}}`;
+if (storeLink) {{
+  storeEl.classList.remove('hidden');
+  storeEl.href = storeLink;
 }}
 
-function showCopyResult(ok) {{
-  const tg = window.Telegram && window.Telegram.WebApp;
-  const isSubCopyMode = mode === 'subcopy';
-  const successMessage = isSubCopyMode ? 'Скопировано' : 'Ссылка скопирована в буфер обмена';
-  if (tg && typeof tg.showPopup === 'function') {{
-    tg.showPopup({{
-      title: ok ? 'Готово' : 'Ошибка',
-      message: ok ? successMessage : 'Не удалось скопировать ссылку, попробуйте ещё раз',
-      buttons: [{{ type: 'ok' }}],
-    }}, () => {{
-      if (ok && isSubCopyMode && typeof tg.close === 'function') {{
-        tg.close();
-      }}
-    }});
-    return;
-  }}
-  status.innerHTML = ok
-    ? `<small>✅ ${{successMessage}}</small>`
-    : '<small>⚠️ Не удалось скопировать ссылку, попробуйте ещё раз</small>';
-
-  if (ok && isSubCopyMode && tg && typeof tg.close === 'function') {{
-    setTimeout(() => tg.close(), 500);
-  }}
-}}
-
-async function copyToClipboard(text) {{
-  const normalized = (text || '').replace(/[\r\n]+/g, '').trim();
-  if (!normalized) {{
-    showCopyResult(false);
-    return;
-  }}
+copyEl.onclick = async () => {{
   try {{
-    if (navigator.clipboard && navigator.clipboard.writeText) {{
-      await navigator.clipboard.writeText(normalized);
-      showCopyResult(true);
-      return;
-    }}
-    throw new Error('Clipboard API unavailable');
-  }} catch (error) {{
-    const area = document.createElement('textarea');
-    area.value = normalized;
-    area.setAttribute('readonly', 'readonly');
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    area.style.left = '-9999px';
-    document.body.appendChild(area);
-    area.focus();
-    area.select();
-    try {{
-      const copied = document.execCommand('copy');
-      showCopyResult(Boolean(copied));
-    }} catch (fallbackError) {{
-      showCopyResult(false);
-    }} finally {{
-      document.body.removeChild(area);
-    }}
-  }}
-}}
-
-subEl.textContent = subUrlFull ? shortenLink(subUrlFull) : 'Нет активной подписки';
-subEl.style.textDecoration = subUrlFull ? 'underline' : 'none';
-subEl.style.pointerEvents = subUrlFull ? 'auto' : 'none';
-
-if (!subUrlFull) {{
-  copyButton.disabled = true;
-  openButton.disabled = mode === 'subcopy';
-}}
-
-if (mode === 'copy' || mode === 'subcopy') {{
-  titleEl.textContent = mode === 'subcopy' ? '🔗 Ссылка на подписку' : '📋 Скопируйте ссылку';
-  copyButton.classList.remove('secondary');
-  copyButton.classList.add('primary');
-  openButton.classList.remove('primary');
-  openButton.classList.add('secondary');
-}}
-
-if (mode === 'subcopy') {{
-  const mutedEl = document.getElementById('connect-muted');
-  const noticeEl = document.getElementById('connect-notice');
-  const actionsEl = document.getElementById('connect-actions');
-  if (mutedEl) mutedEl.style.display = 'none';
-  if (noticeEl) noticeEl.style.display = 'none';
-  if (actionsEl) actionsEl.style.display = 'none';
-  subEl.style.display = 'none';
-  titleEl.textContent = '📋 Копирование ссылки';
-}}
-
-function openApp() {{
-  if (!schemeLink) return;
-  const tg = window.Telegram && window.Telegram.WebApp;
-  try {{
-    if (tg && typeof tg.openLink === 'function') {{
-      tg.openLink(schemeLink);
-      return;
-    }}
-  }} catch (e) {{}}
-  window.location.href = schemeLink;
-}}
-
-openButton.onclick = () => {{
-  if (mode === 'subcopy') {{
-    copyToClipboard(subUrlFull);
-    return;
-  }}
-  openApp();
-}};
-
-copyButton.onclick = async () => {{
-  await copyToClipboard(subUrlFull);
-}};
-
-subEl.onclick = async () => {{
-  if (mode === 'subcopy') {{
-    await copyToClipboard(subUrlFull);
+    await navigator.clipboard.writeText(subUrl);
+    statusEl.textContent = '✅ Ссылка скопирована';
+  }} catch (e) {{
+    statusEl.textContent = '⚠️ Не удалось скопировать автоматически';
   }}
 }};
 
-backButton.onclick = () => {{
-  if (botUsername) {{
-    window.location.href = `https://t.me/${{botUsername}}`;
-    return;
-  }}
-  if (window.Telegram && window.Telegram.WebApp) {{
-    window.Telegram.WebApp.close();
-    return;
-  }}
-  if (document.referrer) {{
-    window.location.href = document.referrer;
-    return;
-  }}
-  window.history.back();
-}};
-
-if (!subUrlFull) {{
-  status.innerHTML = '<small>Ссылка недоступна</small>';
-}} else if (mode === 'copy') {{
-  status.innerHTML = '<small>Нажмите «Скопировать ссылку» и выполните шаги выше.</small>';
-}} else if (mode === 'subcopy') {{
-  status.innerHTML = '<small>Копируем ссылку…</small>';
-  copyToClipboard(subUrlFull);
+if (guidedFlow || !schemeLink) {{
+  titleEl.textContent = '🧭 Нужна ручная настройка';
+  mutedEl.textContent = 'Автоматическое открытие для этой связки клиента/платформы недоступно.';
+  guidedEl.classList.remove('hidden');
+  openEl.classList.add('hidden');
 }} else {{
-  status.innerHTML = '<small>Нажмите «⚡ Открыть приложение», чтобы продолжить.</small>';
+  mutedEl.textContent = 'Открываем приложение...';
+  openEl.href = schemeLink;
+  setTimeout(() => {{ window.location.href = schemeLink; }}, 150);
+  setTimeout(() => {{ fallbackEl.classList.remove('hidden'); }}, 2000);
 }}
-</script></body></html>"""
+</script>
+</body></html>"""
     return web.Response(text=html, content_type="text/html")
 
 
@@ -1364,32 +1272,34 @@ def format_subscription(user_json: dict, usage_json: dict | None, display_name: 
 
 
 def build_sub_link(sub_url: str, platform: str, client: str) -> tuple[str | None, bool]:
+    normalized_platform, normalized_client = normalize_connect_keys(platform, client)
     enc = urllib.parse.quote(sub_url, safe="")
     name_enc = urllib.parse.quote(PROFILE_NAME, safe="")
-    if client == "hiddify":
-        return f"hiddify://install-config/?url={enc}#{name_enc}", False
 
-    if client == "v2ray":
-        if platform == "android":
-            return f"v2rayng://install-sub?url={enc}&name={name_enc}", False
-        if platform == "ios":
-            return f"v2box://install-config?url={enc}&name={PROFILE_NAME}", False
-        return None, False
+    if normalized_client == "hiddify":
+        return f"hiddify://install-config/?url={enc}#OpenPortal", False
 
-    if client == "v2box":
-        if platform in ("android", "ios"):
-            return f"v2box://install-config?url={enc}&name={PROFILE_NAME}", False
-        return None, False
+    if normalized_client == "v2ray":
+        if normalized_platform == "android":
+            return f"v2raytun://import/{enc}", False
+        if normalized_platform == "ios":
+            return f"v2box://install-sub?url={enc}&name={name_enc}", False
+        return None, True
 
-    return None, False
+    if normalized_client == "v2box":
+        if normalized_platform in ("android", "ios", "macos"):
+            return f"v2box://install-sub?url={enc}&name={name_enc}", False
+        return None, True
+
+    return None, True
 
 
 def connect_page_url(platform: str, client: str, sub_url: str) -> str:
-    base = f"{CONNECT_PAGE_BASE_URL}/connect/"
+    base = f"{CONNECT_PAGE_BASE_URL}/connect"
     params = {
         "client": client,
         "platform": platform,
-        "sub": extract_sub_token(sub_url),
+        "sub": sub_url,
     }
     if BOT_PUBLIC_USERNAME:
         params["bot"] = BOT_PUBLIC_USERNAME
@@ -1471,7 +1381,7 @@ def connect_help_text(platform: str, client: str, has_auto: bool) -> str:
         "1) Установите приложение по кнопке ниже.",
     ]
     if has_auto:
-        lines.append("2) Нажмите «🚀 Автоподключение».")
+        lines.append("2) Нажмите «⚡ Автоподключение (1 клик)».")
     else:
         lines.append("2) Нажмите «📋 Скопировать ссылку» и добавьте вручную.")
     lines.append(APP_UNAVAILABLE_IN_REGION_TEXT)
@@ -1607,19 +1517,12 @@ def kb_connect_actions(platform: str, client: str, sub_url: str):
 
     if install_meta.get("store"):
         kb.button(text="📥 Установить из магазина", url=install_meta["store"])
-    elif normalized_client == "v2box":
-        if normalized_platform == "android":
-            kb.button(text="🔎 Найти v2Box в магазине", url=install_meta.get("alt"))
-        elif normalized_platform == "ios":
-            kb.button(text="🔎 Найти v2Box в App Store", url=install_meta.get("alt"))
 
     auto_url, _ = build_sub_link(sub_url, normalized_platform, normalized_client)
     if auto_url:
-        kb.button(text="🚀 Автоподключение", url=connect_page_url(normalized_platform, normalized_client, sub_url))
-    kb.button(text="📋 Скопировать ссылку", url=connect_page_copy_url(normalized_platform, normalized_client, sub_url))
-    kb.button(text=f"📖 Инструкция", callback_data=f"connect:instruction:{normalized_platform}:{normalized_client}")
+        kb.button(text="⚡ Автоподключение (1 клик)", url=connect_page_url(normalized_platform, normalized_client, sub_url))
 
-    if install_meta.get("alt") and normalized_client != "v2box":
+    if install_meta.get("alt"):
         kb.button(text="🧩 Альтернатива", url=install_meta["alt"])
 
     kb.button(text="⬅️ Назад", callback_data=f"connect:clients:{normalized_platform}")
@@ -2069,7 +1972,7 @@ async def guest_howto(cb: CallbackQuery):
         "1) Нажмите «🟢 Попробовать бесплатно».\n"
         "2) Откройте «🔗 Подключить VPN».\n"
         "3) Выберите устройство и приложение.\n"
-        "4) Нажмите «🚀 Автоподключение».\n\n"
+        "4) Нажмите «⚡ Автоподключение (1 клик)».\n\n"
         "Если что-то не сработает — всегда доступна кнопка «📋 Скопировать ссылку»."
     )
     await show_screen(cb.message.chat.id, cb.from_user.id, text, kb_guest())
@@ -2525,7 +2428,7 @@ async def connect_back_to_clients(cb: CallbackQuery):
     await show_screen(
         cb.message.chat.id,
         cb.from_user.id,
-        "Выберите приложение для подключения\n\nВыберите любое доступное в вашем регионе приложение.\nЕсли приложение уже установлено: нажмите на него и затем «Автоподключение».",
+        "Выберите приложение для подключения\n\nВыберите любое доступное в вашем регионе приложение.\nЕсли приложение уже установлено: нажмите на него и затем «⚡ Автоподключение (1 клик)».",
         kb_connect_clients(platform),
     )
     await cb.answer()
@@ -2544,15 +2447,6 @@ async def connect_show_actions(cb: CallbackQuery):
         client = "v2box"
     if platform not in CONNECT_PLATFORMS or client not in CONNECT_CLIENTS:
         return await cb.answer("Некорректные параметры", show_alert=True)
-
-    if platform not in INSTALL_LINKS.get(client, {}):
-        await show_screen(
-            cb.message.chat.id,
-            uid,
-            "⚠️ Недоступно для этой платформы",
-            kb_connect_unavailable(platform),
-        )
-        return await cb.answer()
 
     resolved = await resolve_marzban_username(uid, cb.from_user.username)
     if not resolved:
