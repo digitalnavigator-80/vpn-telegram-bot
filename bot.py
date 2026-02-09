@@ -1014,7 +1014,6 @@ async def handle_subscription(tg_user, chat_id: int):
         return
 
     full_sub_url = build_full_subscription_url(user_data.get("subscription_url"))
-    display_sub_url = shorten_link(full_sub_url) if full_sub_url else None
 
     tariff = "Trial" if plan_id == "trial_7d" else "Paid"
     valid_till = expire_dt.strftime("%d.%m.%Y") if expire_dt else "Без срока"
@@ -1025,12 +1024,10 @@ async def handle_subscription(tg_user, chat_id: int):
         f"Тариф: {tariff}",
         f"Действует до: {valid_till}",
         "",
-        "🔗 Ссылка на подписку",
+        "Чтобы скопировать вашу подписку нажмите кнопку «📋 Скопировать ссылку».",
+        "После этого вставьте в ваше приложение через пункт меню приложения: «Вставить из буфера».",
     ]
-    if full_sub_url:
-        text_lines.append(f"<code>{display_sub_url}</code>")
-        text_lines.append("Нажмите на кнопку ниже, чтобы скопировать полную ссылку.")
-    else:
+    if not full_sub_url:
         text_lines.append("Нет активной подписки")
 
     await show_screen(chat_id, uid, "\n".join(text_lines), kb_my_subscription_active(full_sub_url))
@@ -1470,7 +1467,7 @@ async def kb_main_for_user(tg_id: int, tg_username: str | None):
 def kb_my_subscription_active(sub_url: str | None = None):
     kb = InlineKeyboardBuilder()
     if sub_url:
-        kb.button(text="📋 Скопировать ссылку", web_app=WebAppInfo(url=subscription_copy_page_url(sub_url)))
+        kb.button(text="📋 Скопировать ссылку", callback_data="sub_copy")
     kb.button(text="🔗 Подключить VPN", callback_data="menu_connect")
     kb.button(text="🔄 Обновить подписку", callback_data="menu_tariffs")
     kb.button(text="🛟 Поддержка", callback_data="help")
@@ -2405,6 +2402,27 @@ async def plan_apply(cb: CallbackQuery):
 async def sub_show(cb: CallbackQuery):
     await handle_subscription(cb.from_user, cb.message.chat.id)
     return await cb.answer()
+
+
+@dp.callback_query(F.data == "sub_copy")
+async def sub_copy(cb: CallbackQuery):
+    uid = cb.from_user.id
+    resolved = await resolve_marzban_username(uid, cb.from_user.username)
+    if not resolved:
+        await cb.message.answer("⚠️ Не удалось получить ссылку подписки. Откройте «📊 Моя подписка» позже.")
+        return await cb.answer()
+
+    full_sub_url = await get_subscription_link(resolved)
+    if not full_sub_url:
+        await cb.message.answer("⚠️ Не удалось сформировать ссылку подписки. Попробуйте позже.")
+        return await cb.answer()
+
+    await cb.message.answer(
+        "Скопируйте ссылку и вставьте в приложение через «Вставить из буфера»:\n"
+        f"<code>{full_sub_url}</code>",
+        parse_mode="HTML",
+    )
+    return await cb.answer("Ссылка отправлена")
 
 
 @dp.callback_query(F.data == "sub_revoke")
