@@ -67,7 +67,7 @@ PLANS = {
 PAID_PLANS = {
     "test1d": {
         "title": "🧪 Тестовый доступ (1 день)",
-        "amount": 10,
+        "amount": 1,
         "days": 1,
         "selected_plan": "test_1d",
         "description": "Подходит для проверки оплаты",
@@ -87,6 +87,7 @@ PAID_PLANS = {
         "description": "",
     },
 }
+
 
 DATA_DIR = "data"
 ALLOWED_PATH = f"{DATA_DIR}/allowed.json"
@@ -497,6 +498,11 @@ def is_yookassa_configured() -> bool:
     return True
 
 
+
+def load_payment_requests() -> dict:
+    data = _load_json(PAYMENT_REQUESTS_PATH)
+    return data if isinstance(data, dict) else {}
+
 def get_payment_request(payment_id: str) -> dict | None:
     data = load_json(PAYMENT_REQUESTS_PATH, {})
     item = data.get(payment_id)
@@ -698,6 +704,7 @@ def payment_service_down_text() -> str:
     )
 
 
+
 async def activate_paid_plan(payment_id: str, status: str, source: str):
     item = get_payment_request(payment_id)
     if not item:
@@ -745,13 +752,15 @@ async def activate_paid_plan(payment_id: str, status: str, source: str):
 
     note_base = (data_u.get("note") or "").strip()
     note_add = f"plan={plan_short} payment_id={payment_id}"
-    note = f"{note_base} | {note_add}".strip(" |") if note_base else note_add
+    note = (f"{note_base} | {note_add}".strip(" |") if note_base else note_add)
+    note = note[:480]
 
     payload = {
-        "expire": format_expire_for_api(new_expire),
+        "expire": int(new_expire.timestamp()),
         "status": "active",
         "note": note,
     }
+
     code_p, text_p = await api_put_user(username, payload)
     if code_p not in (200, 204):
         logging.warning(
@@ -761,6 +770,19 @@ async def activate_paid_plan(payment_id: str, status: str, source: str):
             code_p,
             text_p[:200],
         )
+        return
+
+    # ✅ Лучший UX: уведомляем пользователя в Telegram (особенно для Android)
+    try:
+        item2 = get_payment_request(payment_id) or {}
+        if not item2.get("notified"):
+            update_payment_request(payment_id, {"notified": True})
+            await bot.send_message(
+                int(tg_id),
+                "✅ Оплата подтверждена!\n\nДоступ активирован. Нажмите /getvpn чтобы получить VPN.",
+            )
+    except Exception as exc:
+        logging.warning("pay: notify failed payment_id=%s tg_id=%s err=%s", payment_id, tg_id, exc)
 
 
 async def connect_page_web(request: web.Request):
@@ -886,6 +908,29 @@ if (guidedFlow || !schemeLink) {{
     return web.Response(text=html, content_type="text/html")
 
 
+
+
+async def pay_return(request: web.Request):
+    bot_username = "open_portal_bot"
+    back_link = f"https://t.me/{bot_username}"
+    html = f"""<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenPortal — Оплата</title>
+<style>
+body {{ font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif; padding: 16px; background:#0f172a; color:#e2e8f0; }}
+.card {{ background:#1e293b; border-radius:12px; padding:16px; max-width:560px; margin: 0 auto; }}
+a.btn {{ display:block; text-align:center; margin-top:12px; text-decoration:none; padding:12px; border-radius:10px; color:white; background:#2563eb; font-weight:600; }}
+.muted {{ color:#94a3b8; font-size:14px; margin-top:10px; line-height:1.35; }}
+</style></head><body><div class="card">
+<h3>✅ Оплата завершена</h3>
+<p>Оплата обрабатывается автоматически. Сообщение о статусе уже отправлено в Telegram-бот.</p>
+<a class="btn" href="{back_link}">Открыть бота в Telegram</a>
+<p class="muted">Если кнопка не открылась: откройте Telegram вручную и перейдите в чат с ботом @open_portal_bot.</p>
+</div></body></html>"""
+    return web.Response(text=html, content_type="text/html")
+
+
 async def yookassa_webhook(request: web.Request):
     secret = (request.headers.get("X-Webhook-Secret") or request.query.get("secret") or "").strip()
     if not YOOKASSA_WEBHOOK_SECRET or secret != YOOKASSA_WEBHOOK_SECRET:
@@ -917,6 +962,9 @@ async def start_webhook_server():
     app.router.add_get("/yookassa/webhook", yookassa_webhook_healthcheck)
     app.router.add_get("/connect", connect_page_web)
     app.router.add_get("/connect/", connect_page_web)
+    app.router.add_get("/pay/return", pay_return)
+    app.router.add_get("/pay/return/", pay_return)
+
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, YOOKASSA_WEBHOOK_HOST, YOOKASSA_WEBHOOK_PORT)
@@ -1534,7 +1582,7 @@ def kb_connect_actions(platform: str, client: str, sub_url: str):
 
 def kb_tariffs(tg_id: int):
     kb = InlineKeyboardBuilder()
-    kb.button(text="🧪 Тестовый доступ (1 день) — 10 ₽", callback_data="pay:choose:test1d")
+    kb.button(text="🧪  ₽", callback_data="pay:choose:test1d")
     if trial_available(tg_id):
         kb.button(text="🎁 Trial — 7 дней (0₽)", callback_data="plan:trial_7d")
     kb.button(text="📅 1 месяц — 150₽", callback_data="pay:choose:month")
@@ -1552,7 +1600,7 @@ def kb_subscription_actions():
 
 def kb_trial_used():
     kb = InlineKeyboardBuilder()
-    kb.button(text="🧪 Тестовый доступ (1 день) — 10 ₽", callback_data="pay:choose:test1d")
+    kb.button(text="🧪  ₽", callback_data="pay:choose:test1d")
     kb.button(text="📅 1 месяц", callback_data="pay:choose:month")
     kb.button(text=f"💎 1 год — {YEAR_PRICE_RUB}₽ (-15%)", callback_data="pay:choose:year")
     kb.button(text="🏠 Меню", callback_data="back_main")
@@ -1597,7 +1645,7 @@ def kb_payment(plan_id: str):
 
 def kb_payment_choose():
     kb = InlineKeyboardBuilder()
-    kb.button(text="🧪 Тестовый доступ (1 день) — 10 ₽", callback_data="pay:choose:test1d")
+    kb.button(text="🧪  ₽", callback_data="pay:choose:test1d")
     kb.button(text="📅 1 месяц", callback_data="pay:choose:month")
     kb.button(text="💎 1 год", callback_data="pay:choose:year")
     kb.button(text="🏠 Меню", callback_data="back_main")
@@ -1607,7 +1655,7 @@ def kb_payment_choose():
 def kb_payment_checkout(confirmation_url: str, payment_id: str, plan_short: str):
     kb = InlineKeyboardBuilder()
     amount = PAID_PLANS.get(plan_short, PAID_PLANS["month"])["amount"]
-    kb.button(text=f"🧩 Оплатить {amount} ₽", web_app=WebAppInfo(url=confirmation_url))
+    kb.button(text=f"🧩 Оплатить {amount} ₽", url=confirmation_url)
     kb.button(text="🔄 Проверить оплату", callback_data=f"pay:check:{payment_id}")
     kb.button(text="⬅️ Назад к тарифам", callback_data="menu_tariffs")
     kb.button(text="🏠 Меню", callback_data="back_main")
@@ -1848,6 +1896,47 @@ def escape_markdown(text: str) -> str:
 async def start(message: Message):
     save_user_profile(message.from_user)
     uid = message.from_user.id
+
+    # Deep-link handling: /start <payload>
+    payload = (getattr(message, "text", "") or "").split(maxsplit=1)
+    start_payload = payload[1].strip() if len(payload) > 1 else ""
+
+    if start_payload.startswith("pay_"):
+        # pay_return OR pay_<payment_id>
+        if start_payload == "pay_return":
+            # find last payment for this tg_id
+            last_id = None
+            data = load_payment_requests()
+            for pid, item in data.items():
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("tg_id")) == str(uid):
+                    last_id = pid
+            if last_id:
+                # show payment screen with check button for last payment
+                item = get_payment_request(last_id) or {}
+                plan_short = item.get("plan") or "month"
+                await ensure_reply_keyboard(message.chat.id)
+                await show_screen(
+                    message.chat.id,
+                    uid,
+                    payment_screen_text(plan_short),
+                    kb_payment_checkout(item.get("confirmation_url") or "", last_id, plan_short),
+                )
+                return
+        else:
+            payment_id = start_payload.replace("pay_", "", 1).strip()
+            if payment_id:
+                item = get_payment_request(payment_id) or {}
+                plan_short = item.get("plan") or "month"
+                await ensure_reply_keyboard(message.chat.id)
+                await show_screen(
+                    message.chat.id,
+                    uid,
+                    payment_screen_text(plan_short),
+                    kb_payment_checkout(item.get("confirmation_url") or "", payment_id, plan_short),
+                )
+                return
     greeting = start_screen_text(message.from_user)
     try:
         await bot.delete_message(message.chat.id, message.message_id)
@@ -2309,7 +2398,7 @@ async def plan_apply(cb: CallbackQuery):
     note_add = f"plan={plan_id} price={plan['price']} test_mode=1 set_at={set_at}"
     note = f"{note_base} | {note_add}".strip(" |") if note_base else note_add
 
-    payload = {"note": note, "expire": None, "data_limit": None}
+    payload = {"note": (note[:480] if isinstance(note, str) else note), "expire": None, "data_limit": None}
     logging.info("plan: tg_id=%s plan=trial unlimited=1", uid)
 
     code, text = await api_put_user(resolved, payload)

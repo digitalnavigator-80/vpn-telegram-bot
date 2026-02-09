@@ -6,3 +6,5 @@ services:
     network_mode: host
     env_file:
       - .env
+    volumes:
+      - ./data:/app/data
