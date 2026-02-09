@@ -1002,10 +1002,8 @@ async def handle_subscription(tg_user, chat_id: int):
         await show_screen(chat_id, uid, f"{greeting}\n\nУ вас нет активной подписки", kb_my_subscription_inactive(uid))
         return
 
-    status_val = (user_data.get("status") or "").lower()
     expire_dt = parse_expire_from_user_json(user_data.get("expire"))
-    now = datetime.now(timezone.utc)
-    has_active = status_val == "active" and (expire_dt is None or expire_dt > now)
+    has_active = is_active_subscription_user_data(user_data)
 
     if not has_active:
         if trial_used:
@@ -1041,6 +1039,28 @@ async def handle_subscription(tg_user, chat_id: int):
 async def api_get_user(username: str):
     encoded = _quote_username(username)
     return await api_get(f"/api/user/{encoded}")
+
+
+def is_active_subscription_user_data(user_data: dict) -> bool:
+    if not isinstance(user_data, dict):
+        return False
+    status_val = (user_data.get("status") or "").lower()
+    expire_dt = parse_expire_from_user_json(user_data.get("expire"))
+    now = datetime.now(timezone.utc)
+    return status_val == "active" and (expire_dt is None or expire_dt > now)
+
+
+async def has_active_subscription(tg_id: int, tg_username: str | None) -> bool:
+    resolved = await resolve_marzban_username(tg_id, tg_username)
+    if not resolved:
+        return False
+
+    code, payload = await api_get_user(resolved)
+    if code != 200:
+        return False
+
+    user_data = _parse_json(payload)
+    return is_active_subscription_user_data(user_data)
 
 
 async def api_get_user_usage(username: str):
@@ -1428,10 +1448,11 @@ def trial_available(tg_id: int) -> bool:
     return not is_trial_used(tg_id)
 
 
-def kb_main(tg_id: int):
+def kb_main(tg_id: int, include_connect: bool = True):
     kb = InlineKeyboardBuilder()
     kb.button(text="👤 Моя подписка", callback_data="menu_sub")
-    kb.button(text="🔗 Подключить VPN", callback_data="menu_connect")
+    if include_connect:
+        kb.button(text="🔗 Подключить VPN", callback_data="menu_connect")
     if trial_available(tg_id):
         kb.button(text="🎁 Попробовать бесплатно", callback_data="req_access")
     kb.button(text="💳 Тарифы", callback_data="menu_tariffs")
@@ -1439,6 +1460,11 @@ def kb_main(tg_id: int):
     kb.button(text="ℹ️ Как подключиться", callback_data="guest:howto")
     kb.adjust(1)
     return kb.as_markup()
+
+
+async def kb_main_for_user(tg_id: int, tg_username: str | None):
+    is_active = await has_active_subscription(tg_id, tg_username)
+    return kb_main(tg_id, include_connect=is_active)
 
 
 def kb_my_subscription_active(sub_url: str | None = None):
@@ -1841,11 +1867,19 @@ def start_screen_text(user) -> str:
     )
 
 
-def kb_start_screen():
+def kb_start_screen(include_connect: bool = True):
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔌 Начать подключение", callback_data="menu_connect")
+    if include_connect:
+        kb.button(text="🔌 Начать подключение", callback_data="menu_connect")
+    else:
+        kb.button(text="💳 Тарифы", callback_data="menu_tariffs")
     kb.adjust(1)
     return kb.as_markup()
+
+
+async def kb_start_screen_for_user(tg_id: int, tg_username: str | None):
+    is_active = await has_active_subscription(tg_id, tg_username)
+    return kb_start_screen(include_connect=is_active)
 
 
 def profile_greeting(user) -> str:
@@ -1879,7 +1913,7 @@ async def start(message: Message):
         message.chat.id,
         uid,
         greeting,
-        kb_start_screen(),
+        await kb_start_screen_for_user(uid, message.from_user.username),
     )
 
 
@@ -1895,7 +1929,7 @@ async def cmd_menu(message: Message):
         message.chat.id,
         message.from_user.id,
         home_text(message.from_user),
-        kb_main(message.from_user.id),
+        await kb_main_for_user(message.from_user.id, message.from_user.username),
     )
 
 
@@ -1949,7 +1983,7 @@ async def cmd_help(message: Message):
         message.chat.id,
         message.from_user.id,
         f"{get_display_name(message.from_user)},\n\n{help_text()}",
-        kb_main(message.from_user.id),
+        await kb_main_for_user(message.from_user.id, message.from_user.username),
     )
 
 
@@ -1957,7 +1991,7 @@ async def cmd_help(message: Message):
 async def back_main(cb: CallbackQuery):
     save_user_profile(cb.from_user)
     uid = cb.from_user.id
-    await show_screen(cb.message.chat.id, uid, home_text(cb.from_user), kb_main(uid))
+    await show_screen(cb.message.chat.id, uid, home_text(cb.from_user), await kb_main_for_user(uid, cb.from_user.username))
     await cb.answer()
 
 
@@ -1968,7 +2002,7 @@ async def help_cb(cb: CallbackQuery):
         cb.message.chat.id,
         cb.from_user.id,
         f"{get_display_name(cb.from_user)},\n\n{help_text()}",
-        kb_main(cb.from_user.id),
+        await kb_main_for_user(cb.from_user.id, cb.from_user.username),
     )
     await cb.answer()
 
@@ -2586,17 +2620,17 @@ async def fallback_text(message: Message):
         except Exception:
             pass
         await ensure_reply_keyboard(message.chat.id)
-        await show_screen(message.chat.id, uid, home_text(message.from_user), kb_main(uid))
+        await show_screen(message.chat.id, uid, home_text(message.from_user), await kb_main_for_user(uid, message.from_user.username))
         return
     text = "Я понимаю только кнопки 👇\nВыбери действие из меню."
-    await show_screen(message.chat.id, uid, text, kb_main(uid))
+    await show_screen(message.chat.id, uid, text, await kb_main_for_user(uid, message.from_user.username))
 
 
 @dp.callback_query()
 async def fallback_callback(cb: CallbackQuery):
     uid = cb.from_user.id
     await cb.answer("Эта кнопка устарела. Открой меню 👇", show_alert=True)
-    await cb.message.answer(home_text(cb.from_user), reply_markup=kb_main(uid))
+    await cb.message.answer(home_text(cb.from_user), reply_markup=await kb_main_for_user(uid, cb.from_user.username))
 
 
 async def main():
